@@ -33,34 +33,50 @@ loss:
   lamda_mag: 70
 
 train_dataset: 
-  length_in_seconds: 10
-  num_data_tot: 72000  # 200 h
-  num_data_per_epoch: 10000
-  random_start_point: False
+  clean_h5_file_path: 'train_clean_24k.h5'
+  noise_h5_file_path: 'train_noise_24k.h5'
+  rir_h5_file_path: 'train_rir_24k.h5'
+  fs: 24000
+  length_in_seconds: 8
+  num_data_per_epoch: 100000
   train: True
+  snr_db: [5, 20]
+  dr_db: [-40, -10]
+  random_seed: 0929
 
 train_dataloader: 
-  batch_size: 8
+  batch_size: 64
   num_workers: 4
   drop_last: True
-  pin_memory: True
+  pin_memory: True     # 启用锁页内存
+  prefetch_factor: 2     # 每个worker预取2个batch
+  persistent_workers: True # 保持worker进程  
 
 validation_dataset: 
-  length_in_seconds: 10
-  random_start_point: False
-  train: False
+  clean_h5_file_path: 'val_clean_24k.h5'
+  noise_h5_file_path: 'val_noise_24k.h5'
+  rir_h5_file_path: 'val_rir_24k.h5'
+  fs: 24000
+  length_in_seconds: 8
+  num_data_per_epoch: 10000
+  train: True
+  snr_db: [5, 20]
+  dr_db: [-40, -10]
+  random_seed: 2025
 
 validation_dataloader:
-  batch_size: 4
+  batch_size: 64
   num_workers: 4
-  pin_memory: True
+  pin_memory: True     # 启用锁页内存
+  prefetch_factor: 2     # 每个worker预取2个batch
+  persistent_workers: True # 保持worker进程  
 
-samplerate: 16000
+samplerate: 24000
 
 trainer:
-  epochs: 200
+  epochs: 1000
   save_checkpoint_interval: 1
   clip_grad_norm_value: 3.0
-  exp_path: /data/ssd0/xiaobin.rong/study_se/DNS3/exp_gtcrn
+  exp_path: /data/goodman/torch_nn_train/SEtrain/Ha_denoise/exp_gtcrn
   resume: False
   resume_datetime: 2024-12-31-14h28m

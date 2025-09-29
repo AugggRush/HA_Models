@@ -286,7 +286,7 @@ class GTCRN(nn.Module):
         self.hop_len = hop_len
         self.win_len = win_len
         
-        self.erb = ERB(65, 64)
+        self.erb = ERB(65, 64, high_lim=12000, fs=24000)
         self.sfe = SFE(3, 1)
 
         self.encoder = Encoder()

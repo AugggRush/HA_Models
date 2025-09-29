@@ -12,13 +12,14 @@ from glob import glob
 from pesq import pesq
 from joblib import Parallel, delayed
 import soundfile as sf
+import librosa
 import torch.distributed as dist
 from torch.utils.tensorboard import SummaryWriter
 from distributed_utils import reduce_value
 
 from models.gtcrn_end2end import GTCRN as Model
 from loss_factory import HybridLoss as Loss
-from dataloader_dns3 import DNS3Dataset as Dataset
+from dataloader import HaSimuDataset as Dataset
 from scheduler import LinearWarmupCosineAnnealingLR as WarmupLR
 
 seed = 43
@@ -234,8 +235,10 @@ class Trainer:
 
             clean = clean.cpu().numpy()
             enhanced = enhanced.detach().cpu().numpy()
+            clean_resample = librosa.resample(clean, orig_sr=self.config['samplerate'], target_sr=16000)
+            enhanced_resample = librosa.resample(enhanced, orig_sr=self.config['samplerate'], target_sr=16000)
             pesq_score_batch = Parallel(n_jobs=-1)(
-                delayed(pesq)(16000, c, e, 'wb') for c, e in zip(clean, enhanced))
+                delayed(pesq)(16000, c, e, 'wb') for c, e in zip(clean_resample, enhanced_resample))
             pesq_score = torch.tensor(pesq_score_batch, device=self.device).mean()
             if self.world_size > 1:
                 pesq_score = reduce_value(pesq_score)
@@ -310,6 +313,14 @@ if __name__ == '__main__':
     os.environ["CUDA_VISIBLE_DEVICES"] = args.device
     args.world_size = len(args.device.split(','))
     config = OmegaConf.load(args.config)
+    config = OmegaConf.load('configs/cfg_train.yaml')
+    # 将 OmegaConf 的 DictConfig/ListConfig 等转换为原生的 Python 容器（dict/list）
+    # 这样 configs 中的 snd_db: [0, 15] 会成为 Python 列表 [0, 15]
+    try:
+        config = OmegaConf.to_container(config, resolve=True)
+    except Exception:
+        # 若转换失败则保持原始 config（兼容性），后续可手动转换字段
+        pass
     
     if args.world_size > 1:
         torch.multiprocessing.spawn(
