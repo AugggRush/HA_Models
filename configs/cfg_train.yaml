@@ -11,8 +11,8 @@ optimizer:
 
 scheduler:
   kwargs:
-    warmup_steps: 25000
-    decay_until_step: 250000
+    warmup_steps: 2500
+    decay_until_step: 25000
     max_lr: 1e-3
     min_lr: 1e-6
 
@@ -33,16 +33,18 @@ loss:
   lamda_mag: 70
 
 train_dataset: 
-  clean_h5_file_path: 'train_clean_24k.h5'
-  noise_h5_file_path: 'train_noise_24k.h5'
-  rir_h5_file_path: 'train_rir_24k.h5'
+  clean_file_path: 'prepare_datasets/train_clean_24k.csv'
+  noise_file_path: 'prepare_datasets/train_noise_24k.csv'
+  rir_file_path: 'prepare_datasets/train_rir_24k.csv'
   fs: 24000
   length_in_seconds: 8
-  num_data_per_epoch: 100000
+  num_data_per_epoch: 300000
   train: True
-  snr_db: [5, 20]
-  dr_db: [-40, -10]
+  snr_db: [0, 20]
+  dr_db: [-50, -15]
+  pure_noise_prob: 0.1
   random_seed: 0929
+  max_readers: 126
 
 train_dataloader: 
   batch_size: 64
@@ -53,16 +55,18 @@ train_dataloader:
   persistent_workers: True # 保持worker进程  
 
 validation_dataset: 
-  clean_h5_file_path: 'val_clean_24k.h5'
-  noise_h5_file_path: 'val_noise_24k.h5'
-  rir_h5_file_path: 'val_rir_24k.h5'
+  clean_file_path: 'prepare_datasets/val_clean_24k.csv'
+  noise_file_path: 'prepare_datasets/val_noise_24k.csv'
+  rir_file_path: 'prepare_datasets/val_rir_24k.csv'
   fs: 24000
   length_in_seconds: 8
-  num_data_per_epoch: 10000
+  num_data_per_epoch: 30000
   train: True
-  snr_db: [5, 20]
-  dr_db: [-40, -10]
+  snr_db: [0, 20]
+  dr_db: [-50, -15]
+  pure_noise_prob: 0.1
   random_seed: 2025
+  max_readers: 126
 
 validation_dataloader:
   batch_size: 64

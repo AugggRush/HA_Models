@@ -13,6 +13,9 @@ import gc
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 logger = logging.getLogger(__name__)
 
+def _rms(x):
+    return np.sqrt(np.mean(x ** 2)) if x.size > 0 else 0.0
+
 def pad_audio(data, target_length, min_length, mode='constant'):
     """将音频数据填充或截断到目标长度。"""
     current_length = len(data)
@@ -33,7 +36,8 @@ def pad_audio(data, target_length, min_length, mode='constant'):
             padded_data = np.pad(data, (0, pad_width), mode=mode)
         else:
             padded_data = np.pad(data, ((0, pad_width), (0, 0)), mode=mode)
-        return padded_data
+
+    return padded_data
     
 def read_wav_file(file_path):
     """
@@ -133,6 +137,8 @@ def main(args):
         # 3. 使用多进程池读取WAV文件
         logger.info("Starting parallel WAV file reading...")
         success_count = 0
+        zeros_count = 0
+        skipped_count = 0
         # 关键优化：设置批次大小，避免一次性提交所有任务[4](@ref)
         batch_size = 1000  # 根据内存情况调整此值
         total_batches = (num_files_to_save + batch_size - 1) // batch_size
@@ -155,9 +161,16 @@ def main(args):
                         file_index = start_idx + i
                         
                         # 对音频数据进行填充处理
-                        padded_audio = pad_audio(audio_data, target_length, min_length=(clip_duration-1)*sample_sr)
+                        padded_audio = pad_audio(audio_data, target_length, min_length=(clip_duration-1)*sample_sr)             
                         if padded_audio is None:
+                            skipped_count += 1
                             logger.warning(f"Skipped short file: {os.path.basename(file_path)}")
+                            continue
+                        # 计算RMS并检查有效性
+                        rms = _rms(padded_audio)
+                        if rms < 1e-5:
+                            zeros_count += 1
+                            logger.warning(f"Skipped low RMS file: {os.path.basename(file_path)} (RMS: {rms})")
                             continue
                         
                         # 写入HDF5数据集
@@ -165,7 +178,7 @@ def main(args):
                             dset[file_index, :] = padded_audio
                         else:
                             dset[file_index, :, :] = padded_audio
-                        
+
                         success_count += 1
                         logger.debug(f"Successfully processed: {os.path.basename(file_path)}")
                     else:
@@ -177,6 +190,8 @@ def main(args):
                     gc.collect()
                     h5f.flush()  # 刷新HDF5缓存到磁盘
                     logger.info(f"Batch {batch_idx + 1} completed. Successfully processed {success_count} files so far.")
+                    logger.info(f"Batch {batch_idx + 1} completed. zero rms processed {zeros_count} files so far.")
+                    logger.info(f"Batch {batch_idx + 1} completed. too short processed {skipped_count} files so far.")
                 
                 # 测试用提前终止条件
                 if success_count >= 100000:
@@ -202,6 +217,7 @@ def read_hdf5_and_save_wav_samples(hdf5_path, output_dir, num_samples=10):
     # 1. 读取HDF5文件
     with h5py.File(hdf5_path, 'r') as h5f:
         # 获取所有音频数据集的名称
+        zero_count = 0
         for i in range(num_samples):
             if 'audio_data' in h5f:
                 audio_group = h5f['audio_data']
@@ -212,138 +228,41 @@ def read_hdf5_and_save_wav_samples(hdf5_path, output_dir, num_samples=10):
                 # 生成一个随机的行索引
                 random_index = np.random.choice(audio_group.shape[0])
                 selected_datasets = audio_group[random_index]
-            
             # 3. 处理每个选中的样本
-            valid_count = 0
-        
             try:
                 # 获取数据集
                 dataset = selected_datasets
-                
+                rms = np.sqrt(np.mean(dataset ** 2)) if dataset.size > 0 else 0.0
+                if rms < 1e-5:
+                    zero_count += 1
+                    print(f"样本 {random_index+1:03d} 的RMS值过低，可能是静音或无效数据 (RMS: {rms})")
                 # 4. 保存为WAV文件
                 output_filename = f"sample_{random_index+1:03d}.wav"
                 output_path = os.path.join(output_dir, output_filename)
                 
                 sf.write(output_path, dataset, audio_group.attrs['sampling_rate'])
                 print(f"已保存: {output_filename} (采样率: {audio_group.attrs['sampling_rate']}Hz, 长度: {len(dataset)}样本)")
-                
-                # 5. 验证数据有效性
-                if validate_wav_file(output_path, dataset, audio_group.attrs['sampling_rate']):
-                    valid_count += 1
-                    print(f"  ✓ 数据验证通过")
-                else:
-                    print(f"  ✗ 数据验证失败")
-                    
+            
             except Exception as e:
                 print(f"处理样本 {random_index+1:03d} 时出错: {e}")
-        
-        print(f"\n有效性检查总结: {valid_count}/{len(selected_datasets)} 个样本通过验证")
-
-def validate_wav_file(wav_path, original_data, expected_sr):
-    """
-    验证WAV文件的有效性
-    
-    参数:
-        wav_path: WAV文件路径
-        original_data: 原始音频数据（用于比较）
-        expected_sr: 期望的采样率
-    
-    返回:
-        bool: 验证是否通过
-    """
-    try:
-        # 重新读取刚保存的WAV文件
-        validated_data, validated_sr = sf.read(wav_path)
-        
-        # 检查采样率是否匹配
-        if validated_sr != expected_sr:
-            print(f"    采样率不匹配: 期望{expected_sr}Hz, 实际{validated_sr}Hz")
-            return False
-        
-        # 检查数据长度是否一致
-        if len(validated_data) != len(original_data):
-            print(f"    数据长度不匹配: 期望{len(original_data)}, 实际{len(validated_data)}")
-            return False
-        
-        # 检查数据内容是否一致（允许微小浮点误差）
-        if not np.allclose(validated_data, original_data, atol=1e-6):
-            print(f"    数据内容不匹配")
-            return False
-        
-        # 检查数据范围是否合理（音频数据通常应在[-1, 1]范围内）
-        if np.max(np.abs(validated_data)) > 1.5:  # 允许一些超出
-            print(f"    警告: 数据范围可能异常 [-{np.max(np.abs(validated_data)):.3f}, {np.max(np.abs(validated_data)):.3f}]")
-        
-        # 检查是否存在NaN或无穷大值
-        if np.any(np.isnan(validated_data)) or np.any(np.isinf(validated_data)):
-            print(f"    数据包含NaN或无穷大值")
-            return False
-            
-        return True
-        
-    except Exception as e:
-        print(f"    验证过程中出错: {e}")
-        return False
-
-def analyze_audio_properties(hdf5_path):
-    """
-    分析HDF5文件中音频数据的整体属性
-    """
-    print("分析音频数据属性...")
-    
-    with h5py.File(hdf5_path, 'r') as h5f:
-        if 'waveforms' in h5f:
-            audio_group = h5f['waveforms']
-            datasets = list(audio_group.keys())
-        else:
-            datasets = [key for key in h5f.keys() if isinstance(h5f[key], h5py.Dataset)]
-        
-        lengths = []
-        samplerates = []
-        
-        for dataset_name in datasets[:100]:  # 只检查前100个以避免内存问题
-            try:
-                if 'waveforms' in h5f:
-                    dataset = audio_group[dataset_name]
-                else:
-                    dataset = h5f[dataset_name]
-                
-                data = dataset[()]
-                lengths.append(len(data))
-                samplerates.append(dataset.attrs.get('sampling_rate', 0))
-                
-            except:
-                continue
-        
-        if lengths:
-            print(f"音频长度统计:")
-            print(f"  最短: {min(lengths)} 样本")
-            print(f"  最长: {max(lengths)} 样本") 
-            print(f"  平均: {np.mean(lengths):.1f} 样本")
-            print(f"  采样率: {set(s for s in samplerates if s > 0)}")
-
+        print(f"总共发现 {zero_count} 个RMS值过低的样本")
 if __name__ == "__main__":
     # 示例用法
-    config_dict = {
-        "csv_path": "val_rir_24k.csv",  # 包含WAV文件路径的CSV文件
-        "clip_duration": 8,           # 每个剪辑的目标持续时间（秒）
-        "sample_sr": 24000,           # 目标采样率
-        "output_h5_path": "val_rir_24k.h5",  # 输出HDF5文件路径
-        "num_processes": 8,           # 使用的进程数
-        "num_files_to_save": 2000   # 要保存的文件数量
-    }
-    main(args=config_dict)
+    # config_dict = {
+    #     "csv_path": "val_clean_24k.csv",  # 包含WAV文件路径的CSV文件
+    #     "clip_duration": 8,           # 每个剪辑的目标持续时间（秒）
+    #     "sample_sr": 24000,           # 目标采样率
+    #     "output_h5_path": "val_clean_24k_checkzero.h5",  # 输出HDF5文件路径
+    #     "num_processes": 8,           # 使用的进程数
+    #     "num_files_to_save": 10000   # 要保存的文件数量
+    # }
+    # main(args=config_dict)
 
     # 配置参数
-    # hdf5_file_path = "val_clean_24k.h5"  # 替换为您的HDF5文件路径
-    # output_directory = "extracted_wav_samples"  # WAV文件输出目录
-    # num_samples_to_extract = 10  # 要提取的样本数量
-    
-    # # 分析音频属性
-    # analyze_audio_properties(hdf5_file_path)
-    
-    # print("\n开始提取和验证样本...")
-    # # 执行主要功能
-    # read_hdf5_and_save_wav_samples(hdf5_file_path, output_directory, num_samples_to_extract)
+    hdf5_file_path = "val_clean_24k_checkzero.h5"  # 替换为您的HDF5文件路径
+    output_directory = "extracted_wav_samples"  # WAV文件输出目录
+    num_samples_to_extract = 200  # 要提取的样本数量
+    # 执行主要功能
+    read_hdf5_and_save_wav_samples(hdf5_file_path, output_directory, num_samples_to_extract)
     
     # print(f"\n所有操作完成。提取的WAV文件保存在: {output_directory}")    

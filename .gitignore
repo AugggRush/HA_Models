@@ -1,6 +1,8 @@
 **/Ha_denoise
 **/*.h5
+**/*.lmdb
 **/__pycache__
 *.pyc
 *.pyo
 *.pyd
+*.wav

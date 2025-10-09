@@ -231,4 +231,5 @@ def find_rir_to_csv():
             print(error)
 
 if __name__ == "__main__":
-    pick_up_validation_csv()
+    # pick_up_validation_csv()
+    pass
