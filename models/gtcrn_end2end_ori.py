@@ -2,13 +2,11 @@
 GTCRN: ShuffleNetV2 + SFE + TRA + 2 DPGRNN
 Ultra tiny, 33.0 MMACs, 23.67 K params
 """
-import sys
-sys.path.append("../")
 import torch
 import numpy as np
 import torch.nn as nn
 from einops import rearrange
-import putils.torch_asym_stft as torch_asym_stft
+
 
 class ERB(nn.Module):
     def __init__(self, erb_subband_1, erb_subband_2, nfft=512, high_lim=8000, fs=16000):
@@ -231,11 +229,11 @@ class Encoder(nn.Module):
     def __init__(self):
         super().__init__()
         self.en_convs = nn.ModuleList([
-            ConvBlock(3*3, 8, (1,5), stride=(1,2), padding=(0,2), use_deconv=False, is_last=False),
-            ConvBlock(8, 8, (1,5), stride=(1,2), padding=(0,2), groups=2, use_deconv=False, is_last=False),
-            GTConvBlock(8, 8, (3,3), stride=(1,1), padding=(0,1), dilation=(1,1), use_deconv=False),
-            GTConvBlock(8, 8, (3,3), stride=(1,1), padding=(0,1), dilation=(2,1), use_deconv=False),
-            GTConvBlock(8, 8, (3,3), stride=(1,1), padding=(0,1), dilation=(5,1), use_deconv=False)
+            ConvBlock(3*3, 16, (1,5), stride=(1,2), padding=(0,2), use_deconv=False, is_last=False),
+            ConvBlock(16, 16, (1,5), stride=(1,2), padding=(0,2), groups=2, use_deconv=False, is_last=False),
+            GTConvBlock(16, 16, (3,3), stride=(1,1), padding=(0,1), dilation=(1,1), use_deconv=False),
+            GTConvBlock(16, 16, (3,3), stride=(1,1), padding=(0,1), dilation=(2,1), use_deconv=False),
+            GTConvBlock(16, 16, (3,3), stride=(1,1), padding=(0,1), dilation=(5,1), use_deconv=False)
         ])
 
     def forward(self, x):
@@ -245,25 +243,16 @@ class Encoder(nn.Module):
             en_outs.append(x)
         return x, en_outs
 
-class LearnableTanh2d(nn.Module):
-    def __init__(self, in_features, beta=1):
-        super().__init__()
-        self.beta = beta
-        self.slope = nn.Parameter(torch.ones(in_features, 1, 1))
-        self.slope.requires_grad = True
-
-    def forward(self, x):
-        return self.beta * torch.nn.Tanh(self.slope * x)
 
 class Decoder(nn.Module):
     def __init__(self):
         super().__init__()
         self.de_convs = nn.ModuleList([
-            GTConvBlock(8, 8, (3,3), stride=(1,1), padding=(2*5,1), dilation=(5,1), use_deconv=True),
-            GTConvBlock(8, 8, (3,3), stride=(1,1), padding=(2*2,1), dilation=(2,1), use_deconv=True),
-            GTConvBlock(8, 8, (3,3), stride=(1,1), padding=(2*1,1), dilation=(1,1), use_deconv=True),
-            ConvBlock(8, 8, (1,5), stride=(1,2), padding=(0,2), groups=2, use_deconv=True, is_last=False),
-            ConvBlock(8, 2, (1,5), stride=(1,2), padding=(0,2), use_deconv=True, is_last=False)
+            GTConvBlock(16, 16, (3,3), stride=(1,1), padding=(2*5,1), dilation=(5,1), use_deconv=True),
+            GTConvBlock(16, 16, (3,3), stride=(1,1), padding=(2*2,1), dilation=(2,1), use_deconv=True),
+            GTConvBlock(16, 16, (3,3), stride=(1,1), padding=(2*1,1), dilation=(1,1), use_deconv=True),
+            ConvBlock(16, 16, (1,5), stride=(1,2), padding=(0,2), groups=2, use_deconv=True, is_last=False),
+            ConvBlock(16, 2, (1,5), stride=(1,2), padding=(0,2), use_deconv=True, is_last=True)
         ])
 
     def forward(self, x, en_outs):
@@ -286,93 +275,47 @@ class Mask(nn.Module):
 
 
 class GTCRN(nn.Module):
-    def __init__(
-        self,
-        n_fft=256,
-        hop_len=48,
-        win_len=192
-    ):
+    def __init__(self):
         super().__init__()
-        self.n_fft = n_fft
-        self.hop_len = hop_len
-        self.win_len = win_len
-        
-        self.erb = ERB(21, 20, nfft=n_fft, high_lim=12000, fs=24000)
+        self.erb = ERB(65, 64)
         self.sfe = SFE(3, 1)
 
         self.encoder = Encoder()
         
-        self.dpgrnn1 = DPGRNN(8, 11, 8)
-        self.dpgrnn2 = DPGRNN(8, 11, 8)
-        # self.dpgrnn3 = DPGRNN(16, 33, 16)
-        # self.dpgrnn4 = DPGRNN(16, 33, 16)
+        self.dpgrnn1 = DPGRNN(16, 33, 16)
+        self.dpgrnn2 = DPGRNN(16, 33, 16)
         
         self.decoder = Decoder()
-        self.ndecoder = Decoder()
-
-        num_features = 41
-        self.m_lsigmoid = LearnableTanh2d(num_features, beta=1)
-        self.n_lsigmoid = LearnableTanh2d(num_features, beta=1)
 
         self.mask = Mask()
-        # self.nmask = Mask()
 
-        self.stft = torch_asym_stft.STFT_asym(filter_length=n_fft, hop_length=hop_len, win_length=win_len, window='asqrthann', M=hop_len)
-
-        # 固定这些模块的参数
-        self.erb.requires_grad_(False)
-        self.sfe.requires_grad_(False)
-        self.stft.requires_grad_(False)
-
-    def forward(self, x):
+    def forward(self, spec):
         """
-        x: (B, L)
+        spec: (B, F, T, 2)
         """
-        device = x.device
-        n_samples = x.shape[1]
-        x = x.unsqueeze(-1) # B, T, C
-        spec = self.stft.transform_cpx(x) # B, C, T, F, 2
-        spec = spec.squeeze(1).permute(0, 2, 1, 3) # B, F, T, 2
+        spec_ref = spec  # (B,F,T,2)
 
-        spec_real = spec[..., 0].permute(0,2,1) # B, T, F
+        spec_real = spec[..., 0].permute(0,2,1)
         spec_imag = spec[..., 1].permute(0,2,1)
         spec_mag = torch.sqrt(spec_real**2 + spec_imag**2 + 1e-12)
-        feat = torch.stack([spec_mag, spec_real, spec_imag], dim=1)  # (B,3,T,F)
-        
-        spec = spec.permute(0,3,2,1)  # (B,2,T,F)
+        feat = torch.stack([spec_mag, spec_real, spec_imag], dim=1)  # (B,3,T,257)
 
-        feat = self.erb.bm(feat)  # (B,3,T,97)
-        feat = self.sfe(feat)     # (B,9,T,97)
+        feat = self.erb.bm(feat)  # (B,3,T,129)
+        feat = self.sfe(feat)     # (B,9,T,129)
 
         feat, en_outs = self.encoder(feat)
         
-        feat1 = self.dpgrnn1(feat) # (B,16,T,25)
-        feat2 = self.dpgrnn2(feat1) # (B,16,T,25)
-        m_feat = self.decoder(feat2, en_outs)
-        m_feat = self.m_lsigmoid(m_feat.permute(0,3,2,1)).permute(0,3,2,1)
+        feat = self.dpgrnn1(feat) # (B,16,T,33)
+        feat = self.dpgrnn2(feat) # (B,16,T,33)
 
-        # feat3 = self.dpgrnn3(feat) # (B,16,T,25)
-        # feat4 = self.dpgrnn4(feat3) # (B,16,T,25)
-        n_feat = self.ndecoder(feat2, en_outs)
-        n_feat = self.n_lsigmoid(n_feat.permute(0,3,2,1)).permute(0,3,2,1)
-
+        m_feat = self.decoder(feat, en_outs)
+        
         m = self.erb.bs(m_feat)
-        spec_enh = self.mask(m, spec) # (B,2,T,F)
-        spec_enh = spec_enh.permute(0,2,3,1)  # (B,T,F,2)
-        spec_enh = spec_enh.unsqueeze(1) # B, C, T, F, 2
-        m_output = self.stft.inverse_cpx(spec_enh)
-        m_output = m_output.squeeze(-1)
-        m_output = torch.nn.functional.pad(m_output, (0, n_samples-m_output.shape[1]))
 
-        n = self.erb.bs(n_feat)
-        spec_noi = self.mask(n, spec) # (B,2,T,F)
-        spec_noi = spec_noi.permute(0,2,3,1)  # (B,T,F,2)
-        spec_noi = spec_noi.unsqueeze(1) # B, C, T, F, 2
-        n_output = self.stft.inverse_cpx(spec_noi)
-        n_output = n_output.squeeze(-1)
-        n_output = torch.nn.functional.pad(n_output, (0, n_samples-n_output.shape[1]))
-
-        return m_output, n_output
+        spec_enh = self.mask(m, spec_ref.permute(0,3,2,1)) # (B,2,T,F)
+        spec_enh = spec_enh.permute(0,3,2,1)  # (B,F,T,2)
+        
+        return spec_enh
 
 
 if __name__ == "__main__":
@@ -380,22 +323,23 @@ if __name__ == "__main__":
 
     """complexity count"""
     from ptflops import get_model_complexity_info
-    flops, params = get_model_complexity_info(model, (24000,), as_strings=True,
-                                            print_per_layer_stat=True, verbose=True)
-    params = 0
-    for p in model.parameters():
-        params += p.numel()
-    print(flops, params/1e3)
+    flops, params = get_model_complexity_info(model, (257, 500, 2), as_strings=True,
+                                           print_per_layer_stat=True, verbose=True)
+    print(flops, params)
 
-    # """causality check"""
+    """causality check"""
     # a = torch.randn(1, 16000)
     # b = torch.randn(1, 16000)
     # c = torch.randn(1, 16000)
     # x1 = torch.cat([a, b], dim=1)
     # x2 = torch.cat([a, c], dim=1)
-
+    
+    # x1 = torch.stft(x1, 512, 256, 512, torch.hann_window(512).pow(0.5), return_complex=False)
+    # x2 = torch.stft(x2, 512, 256, 512, torch.hann_window(512).pow(0.5), return_complex=False)
     # y1 = model(x1)[0]
     # y2 = model(x2)[0]
-
+    # y1 = torch.istft(y1, 512, 256, 512, torch.hann_window(512).pow(0.5), return_complex=False)
+    # y2 = torch.istft(y2, 512, 256, 512, torch.hann_window(512).pow(0.5), return_complex=False)
+    
     # print((y1[:16000-256*2] - y2[:16000-256*2]).abs().max())
     # print((y1[16000:] - y2[16000:]).abs().max())

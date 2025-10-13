@@ -1,7 +1,7 @@
 network_config:
-  n_fft: 512
-  hop_len: 256
-  win_len: 512
+  n_fft: 256
+  hop_len: 48
+  win_len: 192
 
 DDP:
   world_size: 2
@@ -11,8 +11,8 @@ optimizer:
 
 scheduler:
   kwargs:
-    warmup_steps: 2500
-    decay_until_step: 25000
+    warmup_steps: 25000
+    decay_until_step: 250000
     max_lr: 1e-3
     min_lr: 1e-6
 
@@ -40,14 +40,14 @@ train_dataset:
   length_in_seconds: 8
   num_data_per_epoch: 300000
   train: True
-  snr_db: [0, 20]
-  dr_db: [-50, -15]
-  pure_noise_prob: 0.1
+  snr_db: [5, 20]
+  dr_db: [-50, -20]
+  pure_noise_prob: 0.0
   random_seed: 0929
-  max_readers: 126
+  max_readers: 256
 
 train_dataloader: 
-  batch_size: 64
+  batch_size: 16
   num_workers: 4
   drop_last: True
   pin_memory: True     # 启用锁页内存
@@ -62,14 +62,14 @@ validation_dataset:
   length_in_seconds: 8
   num_data_per_epoch: 30000
   train: True
-  snr_db: [0, 20]
-  dr_db: [-50, -15]
-  pure_noise_prob: 0.1
+  snr_db: [5, 20]
+  dr_db: [-50, -20]
+  pure_noise_prob: 0.0
   random_seed: 2025
-  max_readers: 126
+  max_readers: 256
 
 validation_dataloader:
-  batch_size: 64
+  batch_size: 16
   num_workers: 4
   pin_memory: True     # 启用锁页内存
   prefetch_factor: 2     # 每个worker预取2个batch
@@ -84,3 +84,7 @@ trainer:
   exp_path: /data/goodman/torch_nn_train/SEtrain/Ha_denoise/exp_gtcrn
   resume: False
   resume_datetime: 2024-12-31-14h28m
+
+lmdb_datasets:
+  train_lmdb_path: 'prepare_datasets/training_audio_24k.lmdb'
+  valid_lmdb_path: 'prepare_datasets/validation_audio_24k.lmdb'

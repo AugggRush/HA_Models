@@ -13,6 +13,8 @@ import soundfile as sf
 from torch.utils import data
 from typing import Tuple, Optional, Dict, Any
 from multiprocessing import Pool, cpu_count
+import torch.utils
+import torch.utils.data
 from tqdm import tqdm
 # 配置日志
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
@@ -65,6 +67,7 @@ class HaSimuDataset(torch.utils.data.Dataset):
             torch.backends.cudnn.benchmark = False
         except Exception:
             pass
+        self.fs = fs
         self.target_rir_length = int(0.5 * fs)
         self.num_data_per_epoch = num_data_per_epoch
         self.train = train
@@ -165,6 +168,7 @@ class HaSimuDataset(torch.utils.data.Dataset):
         if idx >= len(speech_list) or len(speech_list) == 0:
             clean = np.zeros(self.L, dtype=np.float32)
             noisy = np.zeros(self.L, dtype=np.float32)
+            print("若索引越界或列表为空，返回零信号 {:d}".format(idx))
             return torch.from_numpy(clean).float(), torch.from_numpy(noisy).float()
 
         speech_path = speech_list[idx]
@@ -267,7 +271,7 @@ class HaSimuDataset(torch.utils.data.Dataset):
         # 防止 NaN / inf
         noisy = np.nan_to_num(noisy).astype(np.float32)
         clean_out = np.nan_to_num(clean_conv_trim).astype(np.float32)
-        # --- 新增：强制 noisy 的动态范围 (RMS dBFS) 在 [-40, -5] 之间 ---
+        # --- 新增：强制 noisy 的动态范围 (RMS dBFS) 在 [-40, -10] 之间 ---
         # 计算 RMS 与 dB
         # 计算噪声音频的RMS并转换为分贝
         eps = 1e-10
@@ -282,7 +286,7 @@ class HaSimuDataset(torch.utils.data.Dataset):
             clean_out = clean_out * scale
         # 防止峰值溢出，进行峰值归一化
         if noisy.size != 0:
-            peak = np.max(np.abs(noisy))
+            peak = np.max([np.max(np.abs(noisy)), np.max(np.abs(clean_out))])
             if peak > 1.0:
                 noisy = noisy / peak
                 clean_out = clean_out / peak
@@ -292,6 +296,10 @@ class HaSimuDataset(torch.utils.data.Dataset):
                 # 返回纯噪声样本
                 clean_out = np.zeros_like(noisy)    
                 return torch.from_numpy(noise_sig).float(), torch.from_numpy(clean_out).float()
+        # 实时检查数据质量
+        if torch.max(torch.abs(noisy)) < 1e-5 or torch.max(torch.abs(clean)) < 1e-5:
+            print(f"警告: 样本 {idx} [d峰值过低: noisy={torch.max(torch.abs(noisy)):.2e}, clean={torch.max(torch.abs(clean)):.2e}")
+                    
         # 返回 torch tensors: (clean, noisy) 按原始代码习惯可调整顺序
         return torch.from_numpy(noisy).float(), torch.from_numpy(clean_out).float()
 
@@ -609,6 +617,7 @@ class HaSimulate_LMDB(torch.utils.data.Dataset):
             torch.backends.cudnn.benchmark = False
         except Exception:
             pass
+        self.fs = fs
         self.target_rir_length = int(0.5 * fs)
         self.num_data_per_epoch = num_data_per_epoch
         self.train = train
@@ -955,39 +964,32 @@ class HaSimuDatasetToLMDB:
             # 创建进度条
             pbar = tqdm(total=total_samples, desc="转换进度")
             
-            with env.begin(write=True) as txn:
-                # 使用进程池
-                with Pool(processes=self.num_workers) as pool:
-                    # 分批处理以避免内存问题
-                    for start_idx in range(0, total_samples, batch_size):
-                        end_idx = min(start_idx + batch_size, total_samples)
-                        batch_indices = list(range(start_idx, end_idx))
-                        
-                        # 并行处理批次
+            with Pool(processes=self.num_workers) as pool:
+                for start_idx in range(0, total_samples, batch_size):
+                    end_idx = min(start_idx + batch_size, total_samples)
+                    batch_indices = list(range(start_idx, end_idx))
+                    
+                    # 为每个批次创建独立的事务[1](@ref)
+                    with env.begin(write=True) as txn:  # 每个批次使用新事务
                         batch_results = []
-                        for i in range(0, len(batch_indices), 100):  # 每100个一组提交
+                        for i in range(0, len(batch_indices), 100):
                             sub_batch = batch_indices[i:i+100]
                             batch_results.extend(pool.map(self._process_sample, sub_batch))
                         
-                        # 写入LMDB
                         successful_writes = 0
                         for idx, data, error in batch_results:
                             if data is not None:
-                                # 使用字符串键[1](@ref)
                                 key = f"{idx:010d}".encode('ascii')
                                 txn.put(key, data)
                                 successful_writes += 1
-                            else:
-                                print(f"警告: 索引 {idx} 处理失败: {error}")
                         
-                        pbar.update(len(batch_indices))
-                        
-                        # 提交当前批次的事务
-                        txn.commit()
-                        # 重新开始新事务
-                        txn = env.begin(write=True)
-                
-                # 写入元数据[6](@ref)
+                    
+                    pbar.update(len(batch_indices))
+            
+            pbar.close()
+            
+            # 元数据写入使用独立事务
+            with env.begin(write=True) as txn:
                 meta_info = {
                     'total_samples': total_samples,
                     'sample_length': self.dataset.L,
@@ -995,13 +997,9 @@ class HaSimuDatasetToLMDB:
                     'creation_time': time.time(),
                     'dataset_type': 'train' if self.dataset.train else 'val'
                 }
-                
                 meta_key = b'meta_info'
                 meta_value = pickle.dumps(meta_info)
                 txn.put(meta_key, zlib.compress(meta_value))
-                txn.commit()
-            
-            pbar.close()
             
             end_time = time.time()
             print(f"转换完成! 耗时: {end_time - start_time:.2f} 秒")
@@ -1021,7 +1019,76 @@ def get_available_memory():
     except ImportError:
         # 如果psutil不可用，返回一个保守估计值
         return 16 * 1024**3  # 假设16GB
+
+class HaDataSetsFromLMDB(torch.utils.data.Dataset):
+    """终极解决方案：完全多进程安全的LMDB Dataset"""
     
+    def __init__(self, lmdb_path, max_reader=512):
+        self.lmdb_path = lmdb_path
+        self.max_reader = max_reader
+        
+        # 在主进程仅获取元数据
+        env = lmdb.open(lmdb_path, max_readers=max_reader, readonly=True, lock=False)
+        with env.begin() as txn:
+            meta_value = txn.get(b'meta_info')
+            if meta_value:
+                meta_info = pickle.loads(zlib.decompress(meta_value))
+                self.total_samples = meta_info['total_samples']
+                self.sample_length = meta_info['sample_length']
+                self.sample_rate = meta_info['sample_rate']
+            else:
+                self.total_samples = sum(1 for _ in txn.cursor() if _[0] != b'meta_info')
+        env.close()
+        
+        # 关键：不在__init__中初始化环境，由worker_init_fn处理
+        self.env = None
+
+    def _init_env(self):
+        """为当前工作进程初始化LMDB环境（惰性初始化）"""
+        if self.env is None:
+            self.env = lmdb.open(
+                self.lmdb_path,
+                max_readers=self.max_reader,
+                readonly=True,
+                lock=False,  # 多读取器必须设置lock=False[2](@ref)
+                create=False,
+                subdir=True
+            )
+
+    def __len__(self):
+        return self.total_samples
+
+    def __getitem__(self, idx):
+        # 确保环境已初始化
+        self._init_env()
+        
+        with self.env.begin() as txn:
+            key = f"{idx:010d}".encode('ascii')
+            compressed_data = txn.get(key)
+            
+            if compressed_data is None:
+                raise KeyError(f"Key {key} not found in LMDB database")
+            
+            serialized_data = zlib.decompress(compressed_data)
+            sample_data = pickle.loads(serialized_data)
+            
+            # 添加数据验证
+            noisy = torch.from_numpy(sample_data['noisy'].copy())  # 使用copy()确保数据独立性
+            clean = torch.from_numpy(sample_data['clean'].copy())
+            
+            # 实时检查数据质量
+            if torch.max(torch.abs(noisy)) < 1e-5 or torch.max(torch.abs(clean)) < 1e-5:
+                print(f"警告: 样本 {idx} [d峰值过低: noisy={torch.max(torch.abs(noisy)):.2e}, clean={torch.max(torch.abs(clean)):.2e}")
+            
+        return noisy, clean
+
+def lmdb_worker_init_fn(worker_id):
+    """DataLoader工作进程初始化函数"""
+    # 确保每个工作进程有独立的随机种子
+    worker_info = torch.utils.data.get_worker_info()
+    if worker_info is not None:
+        torch.manual_seed(worker_info.seed % (2**32 - 1))
+
 if __name__=='__main__':
     # pass
     from omegaconf import OmegaConf
@@ -1036,28 +1103,41 @@ if __name__=='__main__':
         pass
 
         
-    train_dataset = HaSimuDataset(**config['train_dataset'])
-    # 创建转换器并执行转换
-    converter = HaSimuDatasetToLMDB(train_dataset, './prepare_datasets/training_audio_24k_large.lmdb', 4)
-    converter.convert_to_lmdb()
+    # train_dataset = HaSimuDataset(**config['train_dataset'])
+    # # 创建转换器并执行转换
+    # converter = HaSimuDatasetToLMDB(train_dataset, './prepare_datasets/training_audio_24k.lmdb', 4)
+    # converter.convert_to_lmdb()
 
     valid_dataset = HaSimuDataset(**config['validation_dataset'])
     # 创建转换器并执行转换
-    converter = HaSimuDatasetToLMDB(train_dataset, './prepare_datasets/training_audio_24k_large.lmdb', 4)
+    converter = HaSimuDatasetToLMDB(valid_dataset, './prepare_datasets/validation_audio_24k.lmdb', 4)
     converter.convert_to_lmdb()
 
-    # output_dir = WORK_DIR + "/prepare_datasets/check_data_samples"
+    # output_dir = WORK_DIR + "/prepare_datasets/check_data_samples/lmdb_audios"
     # os.makedirs(output_dir, exist_ok=True)
 
     # # 保存训练数据的音频
-    # for i, (noisy, clean) in enumerate(tqdm(train_dataloader, desc="Processing train data")):
-    #     noisy_path = os.path.join(output_dir, f"train_noisy_{i}.wav")
-    #     clean_path = os.path.join(output_dir, f"train_clean_{i}.wav")
-    #     sf.write(noisy_path, noisy[0].numpy(), config['train_dataset']['fs'])
-    #     sf.write(clean_path, clean[0].numpy(), config['train_dataset']['fs'])
-    #     if i >= 30:  # 仅保存前10个样本
+    # datasets = HaDataSetsFromLMDB('./prepare_datasets/validation_audio_24k.lmdb', max_reader=512)
+    # dataloader = torch.utils.data.DataLoader(
+    #     datasets, 
+    #     batch_size=16, 
+    #     shuffle=False, 
+    #     num_workers=4, 
+    #     pin_memory=False,
+    #     worker_init_fn=lmdb_worker_init_fn  # 添加worker初始化函数
+    # )
+    # for i, (noisy, clean) in enumerate(tqdm(dataloader, desc="Processing train data")):
+    #     peak_1 = np.max(np.abs(noisy.numpy()))
+    #     peak_2 = np.max(np.abs(clean.numpy()))
+    #     if peak_1 <= 1e-5 or peak_2 <= 1e-5:
+    #         print(f"Warning: Peak value {peak_1, peak_2} exceeds 1.0, normalizing...")
+    #         noisy_path = os.path.join(output_dir, f"amp_noisy_{i}.wav")
+    #         clean_path = os.path.join(output_dir, f"amp_clean_{i}.wav")
+    #         sf.write(noisy_path, noisy[0].numpy(), config['validation_dataset']['fs'])
+    #         sf.write(clean_path, clean[0].numpy(), config['validation_dataset']['fs'])
     #         break
-
+        # if i > 1000:
+        #     break
     # # 保存验证数据的音频
     # for i, (noisy, clean) in enumerate(tqdm(validation_dataloader, desc="Processing validation data")):
     #     noisy_path = os.path.join(output_dir, f"val_noisy_{i}.wav")

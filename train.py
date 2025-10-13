@@ -19,10 +19,10 @@ from distributed_utils import reduce_value
 
 from models.gtcrn_end2end import GTCRN as Model
 from loss_factory import HybridLoss as Loss
-from dataloader import HaSimuDataset as Dataset
+from dataloader import HaDataSetsFromLMDB as Dataset
 from scheduler import LinearWarmupCosineAnnealingLR as WarmupLR
 
-seed = 43
+seed = 48
 random.seed(seed)
 os.environ['PYTHONHASHSEED'] = str(seed)
 np.random.seed(seed)
@@ -46,16 +46,18 @@ def run(rank, config, args):
     collate_fn = Dataset.collate_fn if hasattr(Dataset, "collate_fn") else None
     # config['train_dataloader']['batch_size'] = config['train_dataloader']['batch_size'] // args.world_size
     shuffle = False if args.world_size > 1 else True
-
-    train_dataset = Dataset(**config['train_dataset'])
+    train_lmdb_path = config['lmdb_datasets'].get('train_lmdb_path', None)
+    train_dataset = Dataset(train_lmdb_path)
+    # train_dataset = Dataset(**config['train_dataset'])  
     train_sampler = torch.utils.data.distributed.DistributedSampler(train_dataset) if args.world_size > 1 else None
     train_dataloader = torch.utils.data.DataLoader(dataset=train_dataset,
                                                     sampler=train_sampler,
                                                     **config['train_dataloader'],
                                                     shuffle=shuffle,
                                                     collate_fn=collate_fn)
-    
-    validation_dataset = Dataset(**config['validation_dataset'])
+    valid_lmdb_path = config['lmdb_datasets'].get('valid_lmdb_path', None)
+    validation_dataset = Dataset(valid_lmdb_path)
+    # validation_dataset = Dataset(**config['validation_dataset'])
     validation_sampler = torch.utils.data.distributed.DistributedSampler(validation_dataset) if args.world_size > 1 else None
     validation_dataloader = torch.utils.data.DataLoader(dataset=validation_dataset,
                                                         sampler=validation_sampler,
@@ -186,19 +188,28 @@ class Trainer:
 
         for step, (noisy, clean) in enumerate(self.train_bar, 1):
             noisy = noisy.to(self.device)
-            clean = clean.to(self.device)  
-            
-            enhanced = self.model(noisy)
+            clean = clean.to(self.device)
+            noise = noisy - clean
+            if np.max(np.abs(clean)) < 1e-5 or np.max(np.abs(noisy)) < 1e-5:
+                print("One of the audio signals is too silent for training.")
+                print(f"Max clean: {np.max(np.abs(clean))}, Max noisy: {np.max(np.abs(noisy))}")
+                continue
+            enhanced, est_noise = self.model(noisy)
                 
-            loss = self.loss_func(enhanced, clean)
+            loss_s = self.loss_func(enhanced, clean)
+            loss_n = self.loss_func(est_noise, noise)
             if self.world_size > 1:
-                loss = reduce_value(loss)
-            total_loss += loss.item()
-
+                loss_s = reduce_value(loss_s)
+                loss_n = reduce_value(loss_n)
+            total_loss_s += loss_s.item()
+            total_loss_n += loss_n.item()
+            loss = loss_s + loss_n
+            total_loss += loss
             self.train_bar.desc = '   train[{}/{}][{}]'.format(
                 epoch, self.epochs + self.start_epoch-1, datetime.now().strftime("%Y-%m-%d-%H:%M"))
 
-            self.train_bar.postfix = 'train_loss={:.3f}'.format(total_loss / step)
+            self.train_bar.postfix = 'train_loss={:.3f}, loss_s={:.3f}, loss_n={:.3f}'\
+                                        .format(total_loss / step, total_loss_s / step, total_loss_n / step)
 
             self.optimizer.zero_grad()
             loss.backward()
@@ -214,6 +225,8 @@ class Trainer:
         if self.rank == 0:
             self.writer.add_scalars('lr', {'lr': self.optimizer.param_groups[0]['lr']}, epoch)
             self.writer.add_scalars('train_loss', {'train_loss': total_loss / step}, epoch)
+            self.writer.add_scalars('loss_s', {'loss_s': total_loss_s / step}, epoch)
+            self.writer.add_scalars('loss_n', {'loss_n': total_loss_n / step}, epoch)
 
 
     @torch.inference_mode()
@@ -225,26 +238,48 @@ class Trainer:
         for step, (noisy, clean) in enumerate(self.validation_bar, 1):
             noisy = noisy.to(self.device)
             clean = clean.to(self.device)  
-            
-            enhanced = self.model(noisy)
+            noise = noisy - clean
+            enhanced, est_noise = self.model(noisy)
 
-            loss = self.loss_func(enhanced, clean)
+            loss_s = self.loss_func(enhanced, clean)
+            loss_n = self.loss_func(est_noise, noise)
             if self.world_size > 1:
-                loss = reduce_value(loss)
+                loss_s = reduce_value(loss_s)
+                loss_n = reduce_value(loss_n)
+            total_loss_s += loss_s.item()
+            total_loss_n += loss_n.item()
+            loss = loss_s + loss_n
             total_loss += loss.item()
 
             clean = clean.cpu().numpy()
             enhanced = enhanced.detach().cpu().numpy()
             clean_resample = librosa.resample(clean, orig_sr=self.config['samplerate'], target_sr=16000)
             enhanced_resample = librosa.resample(enhanced, orig_sr=self.config['samplerate'], target_sr=16000)
-            pesq_score_batch = Parallel(n_jobs=-1)(
-                delayed(pesq)(16000, c, e, 'wb') for c, e in zip(clean_resample, enhanced_resample))
+            def _safe_pesq(sr, clean, enhanced, mode):
+                """安全的 PESQ 计算函数"""
+                # 1. 检查音频有效性
+                if np.max(np.abs(clean)) < 1e-5 or np.max(np.abs(enhanced)) < 1e-5:
+                    print("One of the audio signals is too silent for PESQ calculation.")
+                    print(f"Max clean: {np.max(np.abs(clean))}, Max enhanced: {np.max(np.abs(enhanced))}")
+                    return np.nan
+                return pesq(sr, clean, enhanced, mode)
+            def _safe_normalize_audio(audio):
+                peak = np.max(np.abs(audio))
+                return audio / (peak + 1e-10) * 0.9  # 归一化到 90% 峰值  
+            try:
+                pesq_score_batch = Parallel(n_jobs=-1)(
+                delayed(_safe_pesq)(16000, c, e, 'wb') \
+                    for c, e in zip(_safe_normalize_audio(clean_resample), _safe_normalize_audio(enhanced_resample)))
+            except Exception as e:
+                print(f"PESQ 计算错误: {e}")
+                continue
+
             pesq_score = torch.tensor(pesq_score_batch, device=self.device).mean()
             if self.world_size > 1:
                 pesq_score = reduce_value(pesq_score)
             total_pesq_score += pesq_score
             
-            if self.rank == 0 and (epoch==1 or epoch %10 == 0) and step <= 3:
+            if self.rank == 0 and (epoch==1 or epoch %10 == 0) and step <= 30:
                 noisy_path = os.path.join(self.sample_path, 'sample_{}_noisy.wav'.format(step))
                 clean_path = os.path.join(self.sample_path, 'sample_{}_clean.wav'.format(step))
                 enhanced_path = os.path.join(self.sample_path, 'sample_{}_enh_epoch{}.wav'.format(step, str(epoch).zfill(3)))
@@ -258,8 +293,8 @@ class Trainer:
             self.validation_bar.desc = 'validate[{}/{}][{}]'.format(
                 epoch, self.epochs + self.start_epoch-1, datetime.now().strftime("%Y-%m-%d-%H:%M"))
 
-            self.validation_bar.postfix = 'valid_loss={:.3f}, pesq={:.4f}'.format(
-                total_loss / step, total_pesq_score / step)
+            self.validation_bar.postfix = 'valid_loss={:.3f}, loss_s={:.3f}, loss_n={:.3f}, pesq={:.4f}'.format(
+                total_loss / step, total_loss_s / step, total_loss_n / step, total_pesq_score / step)
 
         if (self.world_size > 1) and (self.device != torch.device("cpu")):
             torch.cuda.synchronize(self.device)
@@ -267,6 +302,8 @@ class Trainer:
         if self.rank == 0:
             self.writer.add_scalars(
                 'val_loss', {'val_loss': total_loss / step, 
+                             'loss_s': total_loss_s / step,
+                             'loss_n': total_loss_s / step,
                              'pesq': total_pesq_score / step}, epoch)
 
         return total_loss / step, total_pesq_score / step
