@@ -68,7 +68,7 @@ class HaSimuDataset(torch.utils.data.Dataset):
         except Exception:
             pass
         self.fs = fs
-        self.target_rir_length = int(0.5 * fs)
+        self.target_rir_length = int(0.2 * fs)
         self.num_data_per_epoch = num_data_per_epoch
         self.train = train
         self.pure_noise_prob = pure_noise_prob  
@@ -85,7 +85,7 @@ class HaSimuDataset(torch.utils.data.Dataset):
         else:
             self.dr_db_min = float(dr_db)
             self.dr_db_max = float(dr_db) 
-
+        self.snr_db = -10
         self.in_memory = False
         self.max_readers = max_readers
         self.length_in_seconds = length_in_seconds
@@ -260,10 +260,10 @@ class HaSimuDataset(torch.utils.data.Dataset):
             noisy = clean_conv + noise_sig
         else:
             # 随机采样一个 SNR（dB）
-            snr_db = int(random.uniform(self.snr_db_min, self.snr_db_max))
+            self.snr_db = int(random.uniform(self.snr_db_min, self.snr_db_max))
             # 要使 SNR = 20*log10(rms_clean / rms_noise_scaled)
             # 则 rms_noise_scaled = rms_clean / (10^(SNR/20))
-            target_linear = 10.0 ** (-snr_db / 20.0)
+            target_linear = 10.0 ** (-self.snr_db / 20.0)
             scale = (rms_clean / rms_noise) * target_linear
             noise_scaled = noise_sig * scale
             noisy = clean_conv + noise_scaled
@@ -271,6 +271,7 @@ class HaSimuDataset(torch.utils.data.Dataset):
         # 防止 NaN / inf
         noisy = np.nan_to_num(noisy).astype(np.float32)
         clean_out = np.nan_to_num(clean_conv_trim).astype(np.float32)
+        noise_scaled = np.nan_to_num(noise_scaled).astype(np.float32)
         # --- 新增：强制 noisy 的动态范围 (RMS dBFS) 在 [-40, -10] 之间 ---
         # 计算 RMS 与 dB
         # 计算噪声音频的RMS并转换为分贝
@@ -284,31 +285,36 @@ class HaSimuDataset(torch.utils.data.Dataset):
             scale = 10.0 ** ((db_target - db_noisy) / 20.0)
             noisy = noisy * scale
             clean_out = clean_out * scale
+            noise_scaled = noise_scaled * scale
         # 防止峰值溢出，进行峰值归一化
         if noisy.size != 0:
-            peak = np.max([np.max(np.abs(noisy)), np.max(np.abs(clean_out))])
+            peak = np.max([np.max(np.abs(noisy)), np.max(np.abs(clean_out)), np.max(np.abs(noise_scaled))])
             if peak > 1.0:
                 noisy = noisy / peak
                 clean_out = clean_out / peak
+                noise_scaled = noise_scaled / peak
         # --- 新增：按 pure_noise_prob 概率返回纯噪声样本 ---
         if self.train and self.pure_noise_prob > 1e-6:
             if random.random() < self.pure_noise_prob:
                 # 返回纯噪声样本
                 clean_out = np.zeros_like(noisy)    
-                return torch.from_numpy(noise_sig).float(), torch.from_numpy(clean_out).float()
+                return torch.from_numpy(noise_scaled).float(), torch.from_numpy(clean_out).float(), self.snr
+            if random.random() < self.pure_noise_prob:
+                # 返回纯噪声样本
+                noisy = np.zeros_like(clean_out)    
+                return torch.from_numpy(noisy).float(), torch.from_numpy(clean_out).float(), self.snr     
         # 实时检查数据质量
-        if torch.max(torch.abs(noisy)) < 1e-5 or torch.max(torch.abs(clean)) < 1e-5:
-            print(f"警告: 样本 {idx} [d峰值过低: noisy={torch.max(torch.abs(noisy)):.2e}, clean={torch.max(torch.abs(clean)):.2e}")
+        if np.max(np.abs(noisy)) < 1e-5 or np.max(np.abs(clean)) < 1e-5:
+            print(f"警告: 样本 {idx} [d峰值过低: noisy={np.max(np.abs(noisy)):.2e}, clean={np.max(np.abs(clean)):.2e}")
                     
         # 返回 torch tensors: (clean, noisy) 按原始代码习惯可调整顺序
-        return torch.from_numpy(noisy).float(), torch.from_numpy(clean_out).float()
+        return torch.from_numpy(noisy).float(), torch.from_numpy(clean_out).float(), self.snr_db
 
     def __len__(self):
         if self.train:
             return self.num_data_per_epoch
         else:
             return len(self.speech_database_valid)
-
 
 class HaSimuDataset_HD5(torch.utils.data.Dataset):
     """
@@ -883,7 +889,7 @@ class HaSimuDatasetToLMDB:
         
         for i in range(sample_size):
             try:
-                noisy, clean = self.dataset[i]
+                noisy, clean, snr = self.dataset[i]
                 # 估算序列化后的大小（包含压缩）
                 sample_data = {
                     'noisy': noisy.numpy(),
@@ -906,10 +912,11 @@ class HaSimuDatasetToLMDB:
         """处理单个样本（用于多进程）"""
         try:
             # 获取数据
-            noisy, clean = self.dataset[idx]
+            noisy, clean, snr = self.dataset[idx]
             
             # 准备数据字典
             sample_data = {
+                'snr': snr,
                 'noisy': noisy.numpy(),
                 'clean': clean.numpy(),
                 'index': idx
@@ -1103,20 +1110,21 @@ if __name__=='__main__':
         pass
 
         
-    # train_dataset = HaSimuDataset(**config['train_dataset'])
-    # # 创建转换器并执行转换
-    # converter = HaSimuDatasetToLMDB(train_dataset, './prepare_datasets/training_audio_24k.lmdb', 4)
-    # converter.convert_to_lmdb()
+    train_dataset = HaSimuDataset(**config['train_dataset'])
+    train_dataset.sample_data_per_epoch()
+    # 创建转换器并执行转换
+    converter = HaSimuDatasetToLMDB(train_dataset, './prepare_datasets/training_audio_24k.lmdb', 4)
+    converter.convert_to_lmdb()
 
     valid_dataset = HaSimuDataset(**config['validation_dataset'])
     # 创建转换器并执行转换
     converter = HaSimuDatasetToLMDB(valid_dataset, './prepare_datasets/validation_audio_24k.lmdb', 4)
     converter.convert_to_lmdb()
 
-    # output_dir = WORK_DIR + "/prepare_datasets/check_data_samples/lmdb_audios"
-    # os.makedirs(output_dir, exist_ok=True)
+    output_dir = WORK_DIR + "/prepare_datasets/check_data_samples/lmdb_audios"
+    os.makedirs(output_dir, exist_ok=True)
 
-    # # 保存训练数据的音频
+    # # # 保存训练数据的音频
     # datasets = HaDataSetsFromLMDB('./prepare_datasets/validation_audio_24k.lmdb', max_reader=512)
     # dataloader = torch.utils.data.DataLoader(
     #     datasets, 
@@ -1129,8 +1137,8 @@ if __name__=='__main__':
     # for i, (noisy, clean) in enumerate(tqdm(dataloader, desc="Processing train data")):
     #     peak_1 = np.max(np.abs(noisy.numpy()))
     #     peak_2 = np.max(np.abs(clean.numpy()))
-    #     if peak_1 <= 1e-5 or peak_2 <= 1e-5:
-    #         print(f"Warning: Peak value {peak_1, peak_2} exceeds 1.0, normalizing...")
+    #     if peak_1 <= 1e-5 or peak_2 <= 1e-5 or peak_1 > 1 or peak_2 > 1:
+    #         print(f"Warning: Peak value {peak_1, peak_2} ...")
     #         noisy_path = os.path.join(output_dir, f"amp_noisy_{i}.wav")
     #         clean_path = os.path.join(output_dir, f"amp_clean_{i}.wav")
     #         sf.write(noisy_path, noisy[0].numpy(), config['validation_dataset']['fs'])

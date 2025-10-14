@@ -253,7 +253,7 @@ class LearnableTanh2d(nn.Module):
         self.slope.requires_grad = True
 
     def forward(self, x):
-        return self.beta * torch.nn.Tanh(self.slope * x)
+        return self.beta * torch.tanh(self.slope * x)
 
 class Decoder(nn.Module):
     def __init__(self):
@@ -266,11 +266,17 @@ class Decoder(nn.Module):
             ConvBlock(8, 2, (1,5), stride=(1,2), padding=(0,2), use_deconv=True, is_last=False)
         ])
 
-    def forward(self, x, en_outs):
+    def forward(self, x, en_outs, de_s = None):
         N_layers = len(self.de_convs)
+        de_outs = []
         for i in range(N_layers):
-            x = self.de_convs[i](x + en_outs[N_layers-1-i])
-        return x
+            if de_s != None and i > 0:
+                inp = x + en_outs[N_layers-1-i] + de_s[i-1]
+            else:
+                inp = x + en_outs[N_layers-1-i]
+            x = self.de_convs[i](inp)
+            de_outs.append(x)
+        return x, de_outs
     
 
 class Mask(nn.Module):
@@ -348,12 +354,12 @@ class GTCRN(nn.Module):
         
         feat1 = self.dpgrnn1(feat) # (B,16,T,25)
         feat2 = self.dpgrnn2(feat1) # (B,16,T,25)
-        m_feat = self.decoder(feat2, en_outs)
+        m_feat, de_s = self.decoder(feat2, en_outs)
         m_feat = self.m_lsigmoid(m_feat.permute(0,3,2,1)).permute(0,3,2,1)
 
         # feat3 = self.dpgrnn3(feat) # (B,16,T,25)
         # feat4 = self.dpgrnn4(feat3) # (B,16,T,25)
-        n_feat = self.ndecoder(feat2, en_outs)
+        n_feat, _ = self.ndecoder(feat2, en_outs, de_s=de_s)
         n_feat = self.n_lsigmoid(n_feat.permute(0,3,2,1)).permute(0,3,2,1)
 
         m = self.erb.bs(m_feat)

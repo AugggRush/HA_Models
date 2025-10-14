@@ -182,18 +182,17 @@ class Trainer:
 
     def _train_epoch(self, epoch):
         total_loss = 0
+        total_loss_s = 0
+        total_loss_n = 0
         if hasattr(self.train_dataloader.dataset, "sample_data_per_epoch"):
             self.train_dataloader.dataset.sample_data_per_epoch()
-        self.train_bar = tqdm(self.train_dataloader, ncols=110)
+        self.train_bar = tqdm(self.train_dataloader, ncols=125)
 
         for step, (noisy, clean) in enumerate(self.train_bar, 1):
             noisy = noisy.to(self.device)
             clean = clean.to(self.device)
             noise = noisy - clean
-            if np.max(np.abs(clean)) < 1e-5 or np.max(np.abs(noisy)) < 1e-5:
-                print("One of the audio signals is too silent for training.")
-                print(f"Max clean: {np.max(np.abs(clean))}, Max noisy: {np.max(np.abs(noisy))}")
-                continue
+
             enhanced, est_noise = self.model(noisy)
                 
             loss_s = self.loss_func(enhanced, clean)
@@ -232,9 +231,11 @@ class Trainer:
     @torch.inference_mode()
     def _validation_epoch(self, epoch):
         total_loss = 0
+        total_loss_s = 0
+        total_loss_n = 0
         total_pesq_score = 0
 
-        self.validation_bar = tqdm(self.validation_dataloader, ncols=123)
+        self.validation_bar = tqdm(self.validation_dataloader, ncols=135)
         for step, (noisy, clean) in enumerate(self.validation_bar, 1):
             noisy = noisy.to(self.device)
             clean = clean.to(self.device)  
@@ -253,6 +254,8 @@ class Trainer:
 
             clean = clean.cpu().numpy()
             enhanced = enhanced.detach().cpu().numpy()
+            noise = noise.detach().cpu().numpy()
+            est_noise = est_noise.detach().cpu().numpy()
             clean_resample = librosa.resample(clean, orig_sr=self.config['samplerate'], target_sr=16000)
             enhanced_resample = librosa.resample(enhanced, orig_sr=self.config['samplerate'], target_sr=16000)
             def _safe_pesq(sr, clean, enhanced, mode):
@@ -282,13 +285,17 @@ class Trainer:
             if self.rank == 0 and (epoch==1 or epoch %10 == 0) and step <= 30:
                 noisy_path = os.path.join(self.sample_path, 'sample_{}_noisy.wav'.format(step))
                 clean_path = os.path.join(self.sample_path, 'sample_{}_clean.wav'.format(step))
+                noise_path = os.path.join(self.sample_path, 'sample_{}_noise.wav'.format(step))
                 enhanced_path = os.path.join(self.sample_path, 'sample_{}_enh_epoch{}.wav'.format(step, str(epoch).zfill(3)))
+                estnoise_path = os.path.join(self.sample_path, 'sample_{}_estn_epoch{}.wav'.format(step, str(epoch).zfill(3)))
                 if not os.path.exists(noisy_path):
                     noisy = noisy.cpu().numpy()
                     sf.write(noisy_path, noisy[0], samplerate=self.config['samplerate'])
                     sf.write(clean_path, clean[0], samplerate=self.config['samplerate'])
+                    sf.write(noise_path, noise[0], samplerate=self.config['samplerate'])
 
                 sf.write(enhanced_path, enhanced[0], samplerate=self.config['samplerate'])
+                sf.write(estnoise_path, est_noise[0], samplerate=self.config['samplerate'])
 
             self.validation_bar.desc = 'validate[{}/{}][{}]'.format(
                 epoch, self.epochs + self.start_epoch-1, datetime.now().strftime("%Y-%m-%d-%H:%M"))
