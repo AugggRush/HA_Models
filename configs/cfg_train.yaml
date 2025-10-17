@@ -38,16 +38,16 @@ train_dataset:
   rir_file_path: 'prepare_datasets/train_rir_24k.csv'
   fs: 24000
   length_in_seconds: 8
-  num_data_per_epoch: 300000
+  num_data_per_epoch: 50000
   train: True
   snr_db: [5, 20]
   dr_db: [-50, -20]
-  pure_noise_prob: 0.0
-  random_seed: 2025
+  pure_noise_prob: 0.1
+  random_seed: 0527
   max_readers: 256
 
 train_dataloader: 
-  batch_size: 64
+  batch_size: 16
   num_workers: 4
   drop_last: True
   pin_memory: True     # 启用锁页内存
@@ -60,16 +60,16 @@ validation_dataset:
   rir_file_path: 'prepare_datasets/val_rir_24k.csv'
   fs: 24000
   length_in_seconds: 8
-  num_data_per_epoch: 30000
+  num_data_per_epoch: 10000
   train: False
   snr_db: [5, 20]
   dr_db: [-50, -20]
-  pure_noise_prob: 0.0
-  random_seed: 1014
+  pure_noise_prob: 0.1
+  random_seed: 1996
   max_readers: 256
 
 validation_dataloader:
-  batch_size: 64
+  batch_size: 16
   num_workers: 4
   pin_memory: True     # 启用锁页内存
   prefetch_factor: 2     # 每个worker预取2个batch
@@ -81,10 +81,10 @@ trainer:
   epochs: 1000
   save_checkpoint_interval: 1
   clip_grad_norm_value: 3.0
-  exp_path: /data/goodman/torch_nn_train/SEtrain/Ha_denoise/gtcrn_dual_decoder_speechCnoise
+  exp_path: /data/goodman/torch_nn_train/SEtrain/Ha_denoise/gtcrn_dual_tanh_pure10_trim_200
   resume: False
   resume_datetime: 2024-12-31-14h28m
 
 lmdb_datasets:
-  train_lmdb_path: 'prepare_datasets/training_audio_24k.lmdb'
-  valid_lmdb_path: 'prepare_datasets/validation_audio_24k.lmdb'
+  train_lmdb_path: 'prepare_datasets/training_audio_24k_pure10_trim200.lmdb'
+  valid_lmdb_path: 'prepare_datasets/validation_audio_24k_pure10_trim200.lmdb'

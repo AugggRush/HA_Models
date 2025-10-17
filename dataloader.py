@@ -171,8 +171,9 @@ class HaSimuDataset(torch.utils.data.Dataset):
             print("若索引越界或列表为空，返回零信号 {:d}".format(idx))
             return torch.from_numpy(clean).float(), torch.from_numpy(noisy).float()
 
-        speech_path = speech_list[idx]
-
+        def rms(x):
+            return np.sqrt(np.mean(x ** 2)) if x.size > 0 else 0.0
+        
         def _read_mono(path):
             try:
                 sig, sr = sf.read(path, dtype='float32')
@@ -186,6 +187,7 @@ class HaSimuDataset(torch.utils.data.Dataset):
             return sig, sr
 
         # 读取语音并截取/补零到 self.L
+        speech_path = speech_list[idx]
         speech_sig, sr_s = _read_mono(speech_path)
         if speech_sig is None:
             clean = np.zeros(self.L, dtype=np.float32)
@@ -203,13 +205,14 @@ class HaSimuDataset(torch.utils.data.Dataset):
                 clean[:total_len] = speech_sig
 
         # 读取并应用 RIR（随机选择一个）
-        rir_sig = None
-        if len(rir_list) > 0:
-            rir_path = random.choice(rir_list)
-            rir_sig_raw, sr_r = _read_mono(rir_path)
-            if rir_sig_raw is not None:
-                rir_sig = rir_sig_raw.copy()
-                
+        rir_sig = np.zeros(self.L, dtype=np.float32)
+        while(rms(rir_sig) == 0):
+            if len(rir_list) > 0:
+                rir_path = random.choice(rir_list)
+                rir_sig_raw, sr_r = _read_mono(rir_path)
+                if rir_sig_raw is not None:
+                    rir_sig = rir_sig_raw.copy()
+      
         # 如果有 RIR 则卷积，否则保持原始 clean
         if rir_sig is not None and np.any(rir_sig):
             # 卷积并取前 self.L
@@ -236,28 +239,28 @@ class HaSimuDataset(torch.utils.data.Dataset):
 
         # 读取噪声并截取/补零到 self.L（随机选择一个噪声文件）
         noise_sig = np.zeros(self.L, dtype=np.float32)
-        if len(noise_list) > 0:
-            noise_path = random.choice(noise_list)
-            n_sig, sr_n = _read_mono(noise_path)
-            if n_sig is not None:
-                n_len = len(n_sig)
-                if n_len >= self.L:
-                    # 随机截取一段
-                    start_n = np.random.randint(0, n_len - self.L + 1)
-                    noise_seg = n_sig[start_n:start_n + self.L].copy()
-                else:
-                    noise_seg = np.zeros(self.L, dtype=np.float32)
-                    noise_seg[:n_len] = n_sig
-                noise_sig = noise_seg.astype(np.float32)
+        while(rms(noise_sig) == 0):
+            if len(noise_list) > 0:
+                noise_path = random.choice(noise_list)
+                n_sig, sr_n = _read_mono(noise_path)
+                if n_sig is not None:
+                    n_len = len(n_sig)
+                    if n_len >= self.L:
+                        # 随机截取一段
+                        start_n = np.random.randint(0, n_len - self.L + 1)
+                        noise_seg = n_sig[start_n:start_n + self.L].copy()
+                    else:
+                        noise_seg = np.zeros(self.L, dtype=np.float32)
+                        noise_seg[:n_len] = n_sig
+                    noise_sig = noise_seg.astype(np.float32)
 
         # 调整噪声幅度以匹配目标 SNR（dB），每次从范围内随机采样一个 SNR
-        def rms(x):
-            return np.sqrt(np.mean(x ** 2)) if x.size > 0 else 0.0
-
         rms_clean = rms(clean_conv)
         rms_noise = rms(noise_sig)
         if rms_noise == 0 or rms_clean == 0:
             noisy = clean_conv + noise_sig
+            noise_scaled = noise_sig
+            print(f"rms zero occurs: {rms_clean}, {rms_noise}")
         else:
             # 随机采样一个 SNR（dB）
             self.snr_db = int(random.uniform(self.snr_db_min, self.snr_db_max))
@@ -298,11 +301,11 @@ class HaSimuDataset(torch.utils.data.Dataset):
             if random.random() < self.pure_noise_prob:
                 # 返回纯噪声样本
                 clean_out = np.zeros_like(noisy)    
-                return torch.from_numpy(noise_scaled).float(), torch.from_numpy(clean_out).float(), self.snr
+                return torch.from_numpy(noise_scaled).float(), torch.from_numpy(clean_out).float(), self.snr_db
             if random.random() < self.pure_noise_prob:
                 # 返回纯噪声样本
                 noisy = np.zeros_like(clean_out)    
-                return torch.from_numpy(noisy).float(), torch.from_numpy(clean_out).float(), self.snr     
+                return torch.from_numpy(noisy).float(), torch.from_numpy(clean_out).float(), self.snr_db    
         # 实时检查数据质量
         if np.max(np.abs(noisy)) < 1e-5 or np.max(np.abs(clean)) < 1e-5:
             print(f"警告: 样本 {idx} [d峰值过低: noisy={np.max(np.abs(noisy)):.2e}, clean={np.max(np.abs(clean)):.2e}")
@@ -314,7 +317,9 @@ class HaSimuDataset(torch.utils.data.Dataset):
         if self.train:
             return self.num_data_per_epoch
         else:
-            return len(self.speech_database_valid)
+            if self.num_data_per_epoch < len(self.speech_database_valid):
+                return self.num_data_per_epoch
+            else: return len(self.speech_database_valid)
 
 class HaSimuDataset_HD5(torch.utils.data.Dataset):
     """
@@ -928,6 +933,7 @@ class HaSimuDatasetToLMDB:
             
             return idx, compressed_data, None
         except Exception as e:
+            print(f"error: {e}")
             return idx, None, str(e)
     
     def _process_batch(self, batch_indices):
@@ -1113,19 +1119,19 @@ if __name__=='__main__':
     train_dataset = HaSimuDataset(**config['train_dataset'])
     train_dataset.sample_data_per_epoch()
     # 创建转换器并执行转换
-    converter = HaSimuDatasetToLMDB(train_dataset, './prepare_datasets/training_audio_24k.lmdb', 4)
+    converter = HaSimuDatasetToLMDB(train_dataset, './prepare_datasets/training_audio_24k_pure10_trim200.lmdb', 4)
     converter.convert_to_lmdb()
 
     valid_dataset = HaSimuDataset(**config['validation_dataset'])
     # 创建转换器并执行转换
-    converter = HaSimuDatasetToLMDB(valid_dataset, './prepare_datasets/validation_audio_24k.lmdb', 4)
+    converter = HaSimuDatasetToLMDB(valid_dataset, './prepare_datasets/validation_audio_24k_pure10_trim200.lmdb', 4)
     converter.convert_to_lmdb()
 
-    output_dir = WORK_DIR + "/prepare_datasets/check_data_samples/lmdb_audios"
-    os.makedirs(output_dir, exist_ok=True)
+    # output_dir = WORK_DIR + "/prepare_datasets/check_data_samples/lmdb_audios"
+    # os.makedirs(output_dir, exist_ok=True)
 
-    # # # 保存训练数据的音频
-    # datasets = HaDataSetsFromLMDB('./prepare_datasets/validation_audio_24k.lmdb', max_reader=512)
+    # # 保存训练数据的音频
+    # datasets = HaDataSetsFromLMDB('./prepare_datasets/validation_audio_24k_pure10_trim200.lmdb', max_reader=512)
     # dataloader = torch.utils.data.DataLoader(
     #     datasets, 
     #     batch_size=16, 

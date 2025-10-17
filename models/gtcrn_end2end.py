@@ -231,11 +231,11 @@ class Encoder(nn.Module):
     def __init__(self):
         super().__init__()
         self.en_convs = nn.ModuleList([
-            ConvBlock(3*3, 8, (1,5), stride=(1,2), padding=(0,2), use_deconv=False, is_last=False),
-            ConvBlock(8, 8, (1,5), stride=(1,2), padding=(0,2), groups=2, use_deconv=False, is_last=False),
-            GTConvBlock(8, 8, (3,3), stride=(1,1), padding=(0,1), dilation=(1,1), use_deconv=False),
-            GTConvBlock(8, 8, (3,3), stride=(1,1), padding=(0,1), dilation=(2,1), use_deconv=False),
-            GTConvBlock(8, 8, (3,3), stride=(1,1), padding=(0,1), dilation=(5,1), use_deconv=False)
+            ConvBlock(3*3, 12, (1,5), stride=(1,2), padding=(0,2), use_deconv=False, is_last=False),
+            ConvBlock(12, 12, (1,5), stride=(1,2), padding=(0,2), groups=2, use_deconv=False, is_last=False),
+            GTConvBlock(12, 12, (3,3), stride=(1,1), padding=(0,1), dilation=(1,1), use_deconv=False),
+            GTConvBlock(12, 12, (3,3), stride=(1,1), padding=(0,1), dilation=(2,1), use_deconv=False),
+            GTConvBlock(12, 12, (3,3), stride=(1,1), padding=(0,1), dilation=(5,1), use_deconv=False)
         ])
 
     def forward(self, x):
@@ -259,11 +259,11 @@ class Decoder(nn.Module):
     def __init__(self):
         super().__init__()
         self.de_convs = nn.ModuleList([
-            GTConvBlock(8, 8, (3,3), stride=(1,1), padding=(2*5,1), dilation=(5,1), use_deconv=True),
-            GTConvBlock(8, 8, (3,3), stride=(1,1), padding=(2*2,1), dilation=(2,1), use_deconv=True),
-            GTConvBlock(8, 8, (3,3), stride=(1,1), padding=(2*1,1), dilation=(1,1), use_deconv=True),
-            ConvBlock(8, 8, (1,5), stride=(1,2), padding=(0,2), groups=2, use_deconv=True, is_last=False),
-            ConvBlock(8, 2, (1,5), stride=(1,2), padding=(0,2), use_deconv=True, is_last=False)
+            GTConvBlock(12, 12, (3,3), stride=(1,1), padding=(2*5,1), dilation=(5,1), use_deconv=True),
+            GTConvBlock(12, 12, (3,3), stride=(1,1), padding=(2*2,1), dilation=(2,1), use_deconv=True),
+            GTConvBlock(12, 12, (3,3), stride=(1,1), padding=(2*1,1), dilation=(1,1), use_deconv=True),
+            ConvBlock(12, 12, (1,5), stride=(1,2), padding=(0,2), groups=2, use_deconv=True, is_last=False),
+            ConvBlock(12, 2, (1,5), stride=(1,2), padding=(0,2), use_deconv=True, is_last=False)
         ])
 
     def forward(self, x, en_outs, de_s = None):
@@ -308,17 +308,17 @@ class GTCRN(nn.Module):
 
         self.encoder = Encoder()
         
-        self.dpgrnn1 = DPGRNN(8, 11, 8)
-        self.dpgrnn2 = DPGRNN(8, 11, 8)
+        self.dpgrnn1 = DPGRNN(12, 11, 12)
+        self.dpgrnn2 = DPGRNN(12, 11, 12)
         # self.dpgrnn3 = DPGRNN(16, 33, 16)
         # self.dpgrnn4 = DPGRNN(16, 33, 16)
         
         self.decoder = Decoder()
-        self.ndecoder = Decoder()
+        # self.ndecoder = Decoder()
 
         num_features = 41
-        self.m_lsigmoid = LearnableTanh2d(num_features, beta=1)
-        self.n_lsigmoid = LearnableTanh2d(num_features, beta=1)
+        self.m_ltanh = LearnableTanh2d(num_features, beta=1)
+        self.n_ltanh = LearnableTanh2d(num_features, beta=1)
 
         self.mask = Mask()
         # self.nmask = Mask()
@@ -355,14 +355,14 @@ class GTCRN(nn.Module):
         feat1 = self.dpgrnn1(feat) # (B,16,T,25)
         feat2 = self.dpgrnn2(feat1) # (B,16,T,25)
         m_feat, de_s = self.decoder(feat2, en_outs)
-        m_feat = self.m_lsigmoid(m_feat.permute(0,3,2,1)).permute(0,3,2,1)
+        m_ = self.m_ltanh(m_feat.permute(0,3,2,1)).permute(0,3,2,1)
 
         # feat3 = self.dpgrnn3(feat) # (B,16,T,25)
         # feat4 = self.dpgrnn4(feat3) # (B,16,T,25)
-        n_feat, _ = self.ndecoder(feat2, en_outs, de_s=de_s)
-        n_feat = self.n_lsigmoid(n_feat.permute(0,3,2,1)).permute(0,3,2,1)
+        # n_feat, _ = self.ndecoder(feat2, en_outs, de_s=de_s)
+        n_ = self.n_ltanh(m_feat.permute(0,3,2,1)).permute(0,3,2,1)
 
-        m = self.erb.bs(m_feat)
+        m = self.erb.bs(m_)
         spec_enh = self.mask(m, spec) # (B,2,T,F)
         spec_enh = spec_enh.permute(0,2,3,1)  # (B,T,F,2)
         spec_enh = spec_enh.unsqueeze(1) # B, C, T, F, 2
@@ -370,7 +370,7 @@ class GTCRN(nn.Module):
         m_output = m_output.squeeze(-1)
         m_output = torch.nn.functional.pad(m_output, (0, n_samples-m_output.shape[1]))
 
-        n = self.erb.bs(n_feat)
+        n = self.erb.bs(n_)
         spec_noi = self.mask(n, spec) # (B,2,T,F)
         spec_noi = spec_noi.permute(0,2,3,1)  # (B,T,F,2)
         spec_noi = spec_noi.unsqueeze(1) # B, C, T, F, 2

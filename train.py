@@ -35,7 +35,7 @@ torch.cuda.manual_seed_all(seed)
 def run(rank, config, args):
     if args.world_size > 1:
         os.environ['MASTER_ADDR'] = 'localhost'
-        os.environ['MASTER_PORT'] = '12354'
+        os.environ['MASTER_PORT'] = '1895'
         dist.init_process_group("nccl", rank=rank, world_size=args.world_size)
         torch.cuda.set_device(rank)
         dist.barrier()
@@ -167,7 +167,7 @@ class Trainer:
             self.best_score = score
 
     def _resume_checkpoint(self):
-        latest_checkpoints = sorted(glob(os.path.join(self.checkpoint_path, 'model_*.tar')))[-1]
+        latest_checkpoints = sorted(glob(os.path.join(self.checkpoint_path, 'model_*.tar')))[-2]
 
         map_location = self.device
         checkpoint = torch.load(latest_checkpoints, map_location=map_location)
@@ -310,7 +310,7 @@ class Trainer:
             self.writer.add_scalars(
                 'val_loss', {'val_loss': total_loss / step, 
                              'loss_s': total_loss_s / step,
-                             'loss_n': total_loss_s / step,
+                             'loss_n': total_loss_n / step,
                              'pesq': total_pesq_score / step}, epoch)
 
         return total_loss / step, total_pesq_score / step
