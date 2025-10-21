@@ -1,10 +1,11 @@
 test_dataset: 
-  noisy_dir: /data/ssd0/xiaobin.rong/Datasets/DNS3/test_noisy/
-  clean_dir: /data/ssd0/xiaobin.rong/Datasets/DNS3/test_clean/
+  noisy_dir: /minioData/goodman/train_data/ha_lmdb/eval_sets/noisy/
+  clean_dir: /minioData/goodman/train_data/ha_lmdb/eval_sets/clean/
+  noise_dir: /minioData/goodman/train_data/ha_lmdb/eval_sets/noise/
 
 network:
-  exp_path: /data/ssd0/xiaobin.rong/study_se/DNS3/exp_gtcrn_2025-03-31-11h26m
+  exp_path: /data/goodman/torch_nn_train/SEtrain/Ha_denoise/gtcrn_dual_decoder_speechCnoise_2025-10-14-10h18m
   config: ${network.exp_path}/config.yaml
-  ckpt_name: model_001
+  ckpt_name: model_200
   checkpoint: ${network.exp_path}/checkpoints/${network.ckpt_name}.tar
-  enh_folder: ${network.exp_path}/${network.ckpt_name}/enhanced
+  enh_folder: /minioData/goodman/train_data/ha_lmdb/eval_sets/enhanced

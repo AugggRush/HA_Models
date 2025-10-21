@@ -11,7 +11,7 @@ optimizer:
 
 scheduler:
   kwargs:
-    warmup_steps: 25000
+    warmup_steps: 10000
     decay_until_step: 250000
     max_lr: 1e-3
     min_lr: 1e-7
@@ -47,7 +47,7 @@ train_dataset:
   max_readers: 256
 
 train_dataloader: 
-  batch_size: 16
+  batch_size: 32
   num_workers: 4
   drop_last: True
   pin_memory: True     # 启用锁页内存
@@ -69,7 +69,7 @@ validation_dataset:
   max_readers: 256
 
 validation_dataloader:
-  batch_size: 16
+  batch_size: 32
   num_workers: 4
   pin_memory: True     # 启用锁页内存
   prefetch_factor: 2     # 每个worker预取2个batch
@@ -78,13 +78,13 @@ validation_dataloader:
 samplerate: 24000
 
 trainer:
-  epochs: 1000
+  epochs: 500
   save_checkpoint_interval: 1
   clip_grad_norm_value: 3.0
-  exp_path: /data/goodman/torch_nn_train/SEtrain/Ha_denoise/gtcrn_dual_tanh_pure10_trim_200
+  exp_path: /data/goodman/torch_nn_train/SEtrain/Ha_denoise/gtcrn_dual_decoder_connect_stepupdate_large_hyberid_loss
   resume: False
   resume_datetime: 2024-12-31-14h28m
 
 lmdb_datasets:
-  train_lmdb_path: 'prepare_datasets/training_audio_24k_pure10_trim200.lmdb'
-  valid_lmdb_path: 'prepare_datasets/validation_audio_24k_pure10_trim200.lmdb'
+  train_lmdb_path: prepare_datasets/training_audio_24k_pure10_trim200.lmdb
+  valid_lmdb_path: prepare_datasets/validation_audio_24k_pure10_trim200.lmdb

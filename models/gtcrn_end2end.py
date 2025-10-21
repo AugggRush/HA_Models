@@ -231,11 +231,11 @@ class Encoder(nn.Module):
     def __init__(self):
         super().__init__()
         self.en_convs = nn.ModuleList([
-            ConvBlock(3*3, 12, (1,5), stride=(1,2), padding=(0,2), use_deconv=False, is_last=False),
-            ConvBlock(12, 12, (1,5), stride=(1,2), padding=(0,2), groups=2, use_deconv=False, is_last=False),
-            GTConvBlock(12, 12, (3,3), stride=(1,1), padding=(0,1), dilation=(1,1), use_deconv=False),
-            GTConvBlock(12, 12, (3,3), stride=(1,1), padding=(0,1), dilation=(2,1), use_deconv=False),
-            GTConvBlock(12, 12, (3,3), stride=(1,1), padding=(0,1), dilation=(5,1), use_deconv=False)
+            ConvBlock(3*3, 16, (1,5), stride=(1,2), padding=(0,2), use_deconv=False, is_last=False),
+            ConvBlock(16, 16, (1,5), stride=(1,2), padding=(0,2), groups=2, use_deconv=False, is_last=False),
+            GTConvBlock(16, 16, (3,3), stride=(1,1), padding=(0,1), dilation=(1,1), use_deconv=False),
+            GTConvBlock(16, 16, (3,3), stride=(1,1), padding=(0,1), dilation=(2,1), use_deconv=False),
+            GTConvBlock(16, 16, (3,3), stride=(1,1), padding=(0,1), dilation=(5,1), use_deconv=False)
         ])
 
     def forward(self, x):
@@ -259,11 +259,11 @@ class Decoder(nn.Module):
     def __init__(self):
         super().__init__()
         self.de_convs = nn.ModuleList([
-            GTConvBlock(12, 12, (3,3), stride=(1,1), padding=(2*5,1), dilation=(5,1), use_deconv=True),
-            GTConvBlock(12, 12, (3,3), stride=(1,1), padding=(2*2,1), dilation=(2,1), use_deconv=True),
-            GTConvBlock(12, 12, (3,3), stride=(1,1), padding=(2*1,1), dilation=(1,1), use_deconv=True),
-            ConvBlock(12, 12, (1,5), stride=(1,2), padding=(0,2), groups=2, use_deconv=True, is_last=False),
-            ConvBlock(12, 2, (1,5), stride=(1,2), padding=(0,2), use_deconv=True, is_last=False)
+            GTConvBlock(16, 16, (3,3), stride=(1,1), padding=(2*5,1), dilation=(5,1), use_deconv=True),
+            GTConvBlock(16, 16, (3,3), stride=(1,1), padding=(2*2,1), dilation=(2,1), use_deconv=True),
+            GTConvBlock(16, 16, (3,3), stride=(1,1), padding=(2*1,1), dilation=(1,1), use_deconv=True),
+            ConvBlock(16, 16, (1,5), stride=(1,2), padding=(0,2), groups=2, use_deconv=True, is_last=False),
+            ConvBlock(16, 2, (1,5), stride=(1,2), padding=(0,2), use_deconv=True, is_last=False)
         ])
 
     def forward(self, x, en_outs, de_s = None):
@@ -289,7 +289,42 @@ class Mask(nn.Module):
         s_imag = spec[:,1] * mask[:,0] + spec[:,0] * mask[:,1]
         s = torch.stack([s_real, s_imag], dim=1)  # (B,2,T,F)
         return s
-
+    
+def deepfilter_complex_filtering_1x1_conv_einsum(spectrum, mask):
+    """
+    使用einsum优化的版本，适用于1x1卷积输出的mask
+    """
+    B, _, T, F = spectrum.shape
+    
+    # 验证mask通道数
+    assert mask.shape[1] == 10, "mask的通道数应该是2 * 5=10"
+    
+    # 重塑mask
+    mask_reshaped = mask.view(B, 2, 5, T, F).permute(0, 1, 3, 4, 2)  # (B, 2, T, F, 5)
+    
+    # 频谱填充和unfold
+    spectrum_padded = torch.nn.functional.pad(spectrum, (2, 2), mode='constant', value=0)
+    unfolded_spectrum = spectrum_padded.unfold(3, 5, 1)  # (B, 2, T, F, 5)
+    
+    # 使用einsum进行高效的复数乘加运算
+    # 实部: sum(Re(spec)*Re(mask) - Im(spec)*Im(mask))
+    real_real = torch.einsum('btfk,btfk->btf', 
+                           unfolded_spectrum[:, 0], mask_reshaped[:, 0])
+    imag_imag = torch.einsum('btfk,btfk->btf', 
+                           unfolded_spectrum[:, 1], mask_reshaped[:, 1])
+    real_part = (real_real + imag_imag)
+    
+    # 虚部: sum(Re(spec)*Im(mask) + Im(spec)*Re(mask))
+    real_imag = torch.einsum('btfk,btfk->btf', 
+                           unfolded_spectrum[:, 0], mask_reshaped[:, 1])
+    imag_real = torch.einsum('btfk,btfk->btf', 
+                           unfolded_spectrum[:, 1], mask_reshaped[:, 0])
+    imag_part = (real_imag + imag_real)
+    
+    # 合并结果
+    filtered_spectrum = torch.stack([real_part, imag_part], dim=1)  # (B, 2, T, F)
+    
+    return filtered_spectrum
 
 class GTCRN(nn.Module):
     def __init__(
@@ -308,20 +343,15 @@ class GTCRN(nn.Module):
 
         self.encoder = Encoder()
         
-        self.dpgrnn1 = DPGRNN(12, 11, 12)
-        self.dpgrnn2 = DPGRNN(12, 11, 12)
-        # self.dpgrnn3 = DPGRNN(16, 33, 16)
-        # self.dpgrnn4 = DPGRNN(16, 33, 16)
+        self.dpgrnn1 = DPGRNN(16, 11, 16)
+        self.dpgrnn2 = DPGRNN(16, 11, 16)
         
         self.decoder = Decoder()
-        # self.ndecoder = Decoder()
 
-        num_features = 41
-        self.m_ltanh = LearnableTanh2d(num_features, beta=1)
-        self.n_ltanh = LearnableTanh2d(num_features, beta=1)
+        self.num_features = 41
+        self.m_lsigmoid = LearnableTanh2d(self.num_features, beta=1)
 
         self.mask = Mask()
-        # self.nmask = Mask()
 
         self.stft = torch_asym_stft.STFT_asym(filter_length=n_fft, hop_length=hop_len, win_length=win_len, window='asqrthann', M=hop_len)
 
@@ -355,14 +385,9 @@ class GTCRN(nn.Module):
         feat1 = self.dpgrnn1(feat) # (B,16,T,25)
         feat2 = self.dpgrnn2(feat1) # (B,16,T,25)
         m_feat, de_s = self.decoder(feat2, en_outs)
-        m_ = self.m_ltanh(m_feat.permute(0,3,2,1)).permute(0,3,2,1)
+        m_feat = self.m_lsigmoid(m_feat.permute(0,3,2,1)).permute(0,3,2,1)
 
-        # feat3 = self.dpgrnn3(feat) # (B,16,T,25)
-        # feat4 = self.dpgrnn4(feat3) # (B,16,T,25)
-        # n_feat, _ = self.ndecoder(feat2, en_outs, de_s=de_s)
-        n_ = self.n_ltanh(m_feat.permute(0,3,2,1)).permute(0,3,2,1)
-
-        m = self.erb.bs(m_)
+        m = self.erb.bs(m_feat)
         spec_enh = self.mask(m, spec) # (B,2,T,F)
         spec_enh = spec_enh.permute(0,2,3,1)  # (B,T,F,2)
         spec_enh = spec_enh.unsqueeze(1) # B, C, T, F, 2
@@ -370,19 +395,74 @@ class GTCRN(nn.Module):
         m_output = m_output.squeeze(-1)
         m_output = torch.nn.functional.pad(m_output, (0, n_samples-m_output.shape[1]))
 
-        n = self.erb.bs(n_)
-        spec_noi = self.mask(n, spec) # (B,2,T,F)
-        spec_noi = spec_noi.permute(0,2,3,1)  # (B,T,F,2)
-        spec_noi = spec_noi.unsqueeze(1) # B, C, T, F, 2
-        n_output = self.stft.inverse_cpx(spec_noi)
+        return m_output, feat2, en_outs, de_s, spec
+
+class noise_estimator(nn.Module):
+    def __init__(
+        self,
+        stft_inst,
+        n_fft=256,
+        hop_len=48,
+        win_len=192
+    ):
+        super().__init__()
+        self.n_fft = n_fft
+        self.hop_len = hop_len
+        self.win_len = win_len
+        
+        self.erb = ERB(21, 20, nfft=n_fft, high_lim=12000, fs=24000)
+        self.noi_decoder = Decoder()
+        self.mask = Mask()
+        self.num_features = 41
+        self.n_lsigmoid = LearnableTanh2d(self.num_features, beta=1)
+
+        self.stft = stft_inst
+
+    def forward(self, x, en_o, de_s, spec, n_samples):
+        """
+        x: (B, L)
+        """
+        
+        n_feat, _ = self.noi_decoder(x, en_o, de_s)
+        n_feat = self.n_lsigmoid(n_feat.permute(0,3,2,1)).permute(0,3,2,1)
+        n = self.erb.bs(n_feat)
+        nois_enh = self.mask(spec, n)
+        
+        nois_enh = nois_enh.permute(0,2,3,1)  # (B,T,F,2)
+        nois_enh = nois_enh.unsqueeze(1) # B, C, T, F, 2
+        n_output = self.stft.inverse_cpx(nois_enh)
         n_output = n_output.squeeze(-1)
         n_output = torch.nn.functional.pad(n_output, (0, n_samples-n_output.shape[1]))
+        
+        return n_output
 
-        return m_output, n_output
+class dual_module(nn.Module):
+    def __init__(
+        self,
+        n_fft=256,
+        hop_len=48,
+        win_len=192
+        ):
+        super().__init__()
+        self.gtcrn = GTCRN(
+            n_fft=n_fft,
+            hop_len=hop_len,
+            win_len=win_len
+            )
+        self.noise_estimator = noise_estimator(
+            stft_inst=self.gtcrn.stft,
+            n_fft=n_fft,
+            hop_len=hop_len,
+            win_len=win_len
+            )
 
+    def forward(self, x):
+        enhanced, feat2, en_outs, de_s, spec = self.gtcrn(x)
+        noise = self.noise_estimator(feat2, en_outs, de_s, spec, x.shape[1])
+        return enhanced, noise
 
 if __name__ == "__main__":
-    model = GTCRN().eval()
+    model = dual_module().eval()
 
     """complexity count"""
     from ptflops import get_model_complexity_info
