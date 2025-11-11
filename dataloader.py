@@ -20,14 +20,6 @@ from tqdm import tqdm
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 logger = logging.getLogger(__name__)
 
-WORK_DIR = os.path.dirname(os.path.abspath(__file__))
-SPEECH_DATABASE_TRAIN = WORK_DIR+'/prepare_datasets/train_clean_24k.csv'
-NOISE_DATABASE_TRAIN =  WORK_DIR+'/prepare_datasets/train_noise_24k.csv'
-SPEECH_DATABASE_VALID =  WORK_DIR+'/prepare_datasets/val_clean_24k.csv'
-NOISE_DATABASE_VALID =  WORK_DIR+'/prepare_datasets/val_noise_24k.csv'
-RIR_DATABASE_TRAIN =  WORK_DIR+'/prepare_datasets/train_rir_24k.csv'
-RIR_DATABASE_VALID =  WORK_DIR+'/prepare_datasets/val_rir_24k.csv'
-
 class HaSimuDataset(torch.utils.data.Dataset):
     def __init__(
         self, 
@@ -43,10 +35,6 @@ class HaSimuDataset(torch.utils.data.Dataset):
         pure_noise_prob=0.1,  # 新增：纯噪声样本比例
         random_seed=1234,
         max_readers=126):
-        if train:
-            print("You are using this training data:", clean_file_path, noise_file_path, rir_file_path)
-        else:
-            print("You are using this validation data:", clean_file_path, noise_file_path, rir_file_path)
 
         # --- 初始化随机种子，保证调试可重复 ---
         try:
@@ -224,19 +212,19 @@ class HaSimuDataset(torch.utils.data.Dataset):
                 tmp[:len(conv)] = conv
                 conv = tmp
             clean_conv = conv.astype(np.float32)
-            # 前五十毫秒的 RIR作为target
-            rir_trim = rir_sig[:self.target_rir_length]  # 裁剪或补零到目标长度       
-            # 卷积并取前 self.L
-            conv_trim = np.convolve(clean, rir_trim)[:self.L]
-            # 若 conv 长度不足 self.L，则补零
-            if len(conv_trim) < self.L:
-                tmp = np.zeros(self.L, dtype=np.float32)
-                tmp[:len(conv_trim)] = conv_trim
-                conv_trim = tmp
-            clean_conv_trim = conv_trim.astype(np.float32)                 
+            # # 前五十毫秒的 RIR作为target
+            # rir_trim = rir_sig[:self.target_rir_length]  # 裁剪或补零到目标长度       
+            # # 卷积并取前 self.L
+            # conv_trim = np.convolve(clean, rir_trim)[:self.L]
+            # # 若 conv 长度不足 self.L，则补零
+            # if len(conv_trim) < self.L:
+            #     tmp = np.zeros(self.L, dtype=np.float32)
+            #     tmp[:len(conv_trim)] = conv_trim
+            #     conv_trim = tmp
+            # clean_conv_trim = conv_trim.astype(np.float32)                 
         else:
             clean_conv = clean.astype(np.float32)
-            clean_conv_trim = clean.astype(np.float32)
+            # clean_conv_trim = clean.astype(np.float32)
 
         # 读取噪声并截取/补零到 self.L（随机选择一个噪声文件）
         noise_sig = np.zeros(self.L, dtype=np.float32)
@@ -276,7 +264,7 @@ class HaSimuDataset(torch.utils.data.Dataset):
 
         # 防止 NaN / inf
         noisy = np.nan_to_num(noisy).astype(np.float32)
-        clean_out = np.nan_to_num(clean_conv_trim).astype(np.float32)
+        clean_out = np.nan_to_num(clean_conv).astype(np.float32)
         noise_scaled = np.nan_to_num(noise_scaled).astype(np.float32)
         # --- 新增：强制 noisy 的动态范围 (RMS dBFS) 在 [-40, -10] 之间 ---
         # 计算 RMS 与 dB
@@ -314,7 +302,7 @@ class HaSimuDataset(torch.utils.data.Dataset):
             print(f"警告: 样本 {idx} [d峰值过低: noisy={np.max(np.abs(noisy)):.2e}, clean={np.max(np.abs(clean)):.2e}")
                     
         # 返回 torch tensors: (clean, noisy) 按原始代码习惯可调整顺序
-        return torch.from_numpy(noisy).float(), torch.from_numpy(clean_out).float(), self.snr_db
+        return torch.from_numpy(noisy.copy()).float(), torch.from_numpy(clean_out.copy()).float(), self.snr_db
 
     def __len__(self):
         if self.train:
@@ -1138,92 +1126,92 @@ if __name__=='__main__':
         pass
 
         
-    train_dataset = HaSimuDataset(**config['validation_dataset'])
-    # train_dataset.sample_data_per_epoch()
-    # # 创建转换器并执行转换
-    # converter = HaSimuDatasetToLMDB(train_dataset, './prepare_datasets/training_audio_24k_pure10_trim200.lmdb', 4)
-    # converter.convert_to_lmdb()
+    train_dataset = HaSimuDataset(**config['train_dataset'])
+    train_dataset.sample_data_per_epoch()
+    # 创建转换器并执行转换
+    converter = HaSimuDatasetToLMDB(train_dataset, './prepare_datasets/training_audio_24k_noDereverb.lmdb', 4)
+    converter.convert_to_lmdb()
 
-    # valid_dataset = HaSimuDataset(**config['validation_dataset'])
-    # # 创建转换器并执行转换
-    # converter = HaSimuDatasetToLMDB(valid_dataset, './prepare_datasets/validation_audio_24k_pure10_trim200.lmdb', 4)
-    # converter.convert_to_lmdb()
+    valid_dataset = HaSimuDataset(**config['validation_dataset'])
+    # 创建转换器并执行转换
+    converter = HaSimuDatasetToLMDB(valid_dataset, './prepare_datasets/validation_audio_24k_noDereverb.lmdb', 4)
+    converter.convert_to_lmdb()
 
-    output_dir = "/minioData/goodman/train_data/ha_lmdb/eval_sets/"
-    os.makedirs(output_dir, exist_ok=True)
+    # output_dir = "/minioData/goodman/train_data/ha_lmdb/eval_sets_int32/"
+    # os.makedirs(output_dir, exist_ok=True)
 
-    # 保存训练数据的音频
-    datasets = HaDataSetsFromLMDB('./prepare_datasets/validation_audio_24k_pure10_trim200.lmdb', max_reader=512)
-    dataloader = torch.utils.data.DataLoader(
-        datasets, 
-        batch_size=16, 
-        shuffle=True, 
-        num_workers=4, 
-        pin_memory=False,
-        worker_init_fn=lmdb_worker_init_fn  # 添加worker初始化函数
-    )
+    # # 保存训练数据的音频
+    # datasets = HaDataSetsFromLMDB('./prepare_datasets/validation_audio_24k_pure10_trim200.lmdb', max_reader=512)
+    # dataloader = torch.utils.data.DataLoader(
+    #     datasets, 
+    #     batch_size=16, 
+    #     shuffle=True, 
+    #     num_workers=4, 
+    #     pin_memory=False,
+    #     worker_init_fn=lmdb_worker_init_fn  # 添加worker初始化函数
+    # )
     
-    # 初始化计数器
-    # 创建SNR子目录
-    # 创建音频类型子目录 (noisy, noise, clean)
-    audio_types = ['noisy', 'noise', 'clean']
-    for audio_type in audio_types:
-        audio_type_dir = os.path.join(output_dir, audio_type)
-        os.makedirs(audio_type_dir, exist_ok=True)    
-    snr_values = [5, 10, 15, 19] 
-    snr_counts = {5: 0, 10: 0, 15: 0, 19: 0}
-    count = 0
-    target_count = 100 # 每个SNR需要50条样本
-    # 用于存储符合条件的样本
-    collected_samples = {snr: [] for snr in snr_values}
-    print("开始收集样本...")
-    while(1):
-        index = np.random.randint(0, len(datasets)-1)
-        for snr in snr_values:
-            datas =  train_dataset.make_wavs_noisy(index, snr=snr)
-            collected_samples[snr].append(datas)
-        # 检查是否已经收集足够样本
-        if (count >= target_count):
-            break
-        count += 1
+    # # 初始化计数器
+    # # 创建SNR子目录
+    # # 创建音频类型子目录 (noisy, noise, clean)
+    # audio_types = ['noisy', 'noise', 'clean']
+    # for audio_type in audio_types:
+    #     audio_type_dir = os.path.join(output_dir, audio_type)
+    #     os.makedirs(audio_type_dir, exist_ok=True)    
+    # snr_values = [0, 5, 10, 15, 20] 
+    # snr_counts = {0: 0, 5: 0, 10: 0, 15: 0, 20: 0}
+    # count = 0
+    # target_count = 100 # 每个SNR需要100条样本
+    # # 用于存储符合条件的样本
+    # collected_samples = {snr: [] for snr in snr_values}
+    # print("开始收集样本...")
+    # while(1):
+    #     index = np.random.randint(0, len(datasets)-1)
+    #     for snr in snr_values:
+    #         datas =  train_dataset.make_wavs_noisy(index, snr=snr)
+    #         collected_samples[snr].append(datas)
+    #     # 检查是否已经收集足够样本
+    #     if (count >= target_count):
+    #         break
+    #     count += 1
 
-    print("样本收集完成，开始保存文件...")
-    # 保存音频文件 - 按照音频类型分类存储
-    for snr in snr_values:
-        for sample in collected_samples[snr]:
-            # 构建文件名（包含SNR信息）
-            i = sample['index']
-            snr = sample['snr']
-            file_prefix = f"sample_{i:04d}_snr_{snr}"
+    # print("样本收集完成，开始保存文件...")
+    # # 保存音频文件 - 按照音频类型分类存储
+    # for snr in snr_values:
+    #     for sample in collected_samples[snr]:
+    #         # 构建文件名（包含SNR信息）
+    #         i = sample['index']
+    #         snr = sample['snr']
+    #         file_prefix = f"sample_{i:04d}_snr_{snr}"
             
-            # 将张量转换为numpy数组（假设音频数据是单声道）
-            noisy_np = sample['noisy']
-            clean_np = sample['clean']
-            noise_np = sample['noise']
+    #         # 将张量转换为numpy数组（假设音频数据是单声道）
+    #         noisy_np = (sample['noisy'] * 2147483647).astype(np.int32)
+    #         clean_np = (sample['clean'] * 2147483647).astype(np.int32)
+    #         noise_np = (sample['noise'] * 2147483647).astype(np.int32)
             
-            # 分别保存到对应的音频类型文件夹
-            try:
-                # 假设采样率为24000Hz，根据实际情况调整
-                sample_rate = 24000
+    #         # 分别保存到对应的音频类型文件夹
+    #         try:
+    #             # 假设采样率为24000Hz，根据实际情况调整
+    #             sample_rate = 24000
                 
-                # 保存noisy音频到noisy文件夹
-                noisy_path = os.path.join(output_dir, 'noisy', f"{file_prefix}.wav")
-                sf.write(noisy_path, noisy_np, sample_rate)
+    #             # 保存noisy音频到noisy文件夹
+    #             noisy_path = os.path.join(output_dir, 'noisy', f"{file_prefix}.wav")
+    #             sf.write(noisy_path, noisy_np, sample_rate,  subtype='PCM_32')
                 
-                # 保存clean音频到clean文件夹
-                clean_path = os.path.join(output_dir, 'clean', f"{file_prefix}.wav")
-                sf.write(clean_path, clean_np, sample_rate)
+    #             # 保存clean音频到clean文件夹
+    #             clean_path = os.path.join(output_dir, 'clean', f"{file_prefix}.wav")
+    #             sf.write(clean_path, clean_np, sample_rate,  subtype='PCM_32')
                 
-                # 保存noise音频到noise文件夹
-                noise_path = os.path.join(output_dir, 'noise', f"{file_prefix}.wav")
-                sf.write(noise_path, noise_np, sample_rate)
+    #             # 保存noise音频到noise文件夹
+    #             noise_path = os.path.join(output_dir, 'noise', f"{file_prefix}.wav")
+    #             sf.write(noise_path, noise_np, sample_rate,  subtype='PCM_32')
                 
-            except Exception as e:
-                print(f"保存文件时出错: {e}")
+    #         except Exception as e:
+    #             print(f"保存文件时出错: {e}")
 
-    print("所有音频文件保存完成！")
-    print(f"文件保存结构:")
-    print(f"{output_dir}/")
-    print(f"├── noisy/     # 存放含噪音频文件，文件名包含SNR信息")
-    print(f"├── clean/     # 存放纯净音频文件，文件名包含SNR信息") 
-    print(f"└── noise/     # 存放噪声音频文件，文件名包含SNR信息")
+    # print("所有音频文件保存完成！")
+    # print(f"文件保存结构:")
+    # print(f"{output_dir}/")
+    # print(f"├── noisy/     # 存放含噪音频文件，文件名包含SNR信息")
+    # print(f"├── clean/     # 存放纯净音频文件，文件名包含SNR信息") 
+    # print(f"└── noise/     # 存放噪声音频文件，文件名包含SNR信息")

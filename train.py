@@ -1,4 +1,5 @@
 import os
+os.environ['TORCH_DISTRIBUTED_DEBUG'] = 'DETAIL'
 import torch
 import random
 import shutil
@@ -17,9 +18,8 @@ import torch.distributed as dist
 from torch.utils.tensorboard import SummaryWriter
 from distributed_utils import reduce_value
 
-from models.gtcrn_end2end import GTCRN as gtcrn
-from models.gtcrn_end2end import dual_module as dual_model
-from loss_factory import HybridLoss as Loss
+from models.deepfilternet3 import DfNet
+from loss_factory import DfLoss
 from dataloader import HaDataSetsFromLMDB as Dataset
 from scheduler import LinearWarmupCosineAnnealingLR as WarmupLR
 
@@ -66,19 +66,26 @@ def run(rank, config, args):
                                                         shuffle=False,
                                                         collate_fn=collate_fn)
         
-    model = dual_model(**config['network_config']).to(args.device)
-
-    if args.world_size > 1:
-        model = torch.nn.parallel.DistributedDataParallel(model, device_ids=[rank])
-
+    # model = gtcrn(**config['network_config']).to(args.device)
+    model = DfNet(config['network_config']).to(args.device)
     optimizer = torch.optim.Adam(params=model.parameters(), **config['optimizer'])
+    if args.world_size > 1:
+        # 使用更优的DDP配置
+        model = torch.nn.parallel.DistributedDataParallel(
+            model, 
+            device_ids=[rank],
+            gradient_as_bucket_view=True,  # 关键参数,避免stride不匹配
+            broadcast_buffers=False,        # 如果不需要同步buffer可以关闭
+            static_graph=False              # 如果模型结构动态变化设为False
+        )
+        # model = torch.nn.parallel.DistributedDataParallel(model, device_ids=[rank])
+
     # scheduler = torch.optim.lr_scheduler.MultiStepLR(optimizer, **config['scheduler']['kwargs'])
     # scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(optimizer, **config['scheduler']['kwargs'])
     # scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(optimizer, **config['scheduler']['kwargs'])
     scheduler = WarmupLR(optimizer, **config['scheduler']['kwargs'])
-    
-    loss_func = Loss(**config['loss']).to(args.device)
 
+    loss_func = DfLoss(**config['loss']).to(args.device)
     trainer = Trainer(config=config, model=model,optimizer=optimizer, scheduler=scheduler, loss_func=loss_func,
                       train_dataloader=train_dataloader, validation_dataloader=validation_dataloader, 
                       train_sampler=train_sampler, args=args)
@@ -165,6 +172,10 @@ class Trainer:
 
         if score > self.best_score:
             self.state_dict_best = state_dict.copy()
+            torch.save(self.state_dict_best,
+                    os.path.join(self.checkpoint_path,
+                    'best_model_{}.tar'.format(str(self.state_dict_best['epoch']).zfill(3))))
+
             self.best_score = score
 
     def _resume_checkpoint(self):
@@ -187,21 +198,21 @@ class Trainer:
             self.train_dataloader.dataset.sample_data_per_epoch()
         self.train_bar = tqdm(self.train_dataloader, ncols=125)
 
-        for step, (noisy, clean) in enumerate(self.train_bar, 1):
-            noisy = noisy.to(self.device)
-            clean = clean.to(self.device)
+        for step, (noisy, clean, snr) in enumerate(self.train_bar, 1):
+            noisy = noisy.clone().to(self.device)
+            clean = clean.clone().to(self.device)
 
-            enhanced, _, _, _, _= self.model(noisy)
+            enhanced, _, _, _, _ = self.model(noisy)
                 
-            loss = self.loss_func(enhanced, clean)
+            loss, loss_Mr, loss_Hyb = self.loss_func(enhanced, clean)
             if self.world_size > 1:
                 loss = reduce_value(loss)
             total_loss += loss
             self.train_bar.desc = '   train[{}/{}][{}]'.format(
                 epoch, self.epochs + self.start_epoch-1, datetime.now().strftime("%Y-%m-%d-%H:%M"))
 
-            self.train_bar.postfix = 'train_loss={:.3f}'\
-                                        .format(total_loss / step)
+            self.train_bar.postfix = 'Mr_loss={:.3f}, Hyb_loss={:.3f}, train_loss={:.3f}'\
+                                        .format(loss_Mr, loss_Hyb, total_loss / step)
 
             self.optimizer.zero_grad()
             loss.backward()
@@ -226,7 +237,7 @@ class Trainer:
             self.train_dataloader.dataset.sample_data_per_epoch()
         self.train_bar = tqdm(self.train_dataloader, ncols=125)
 
-        for step, (noisy, clean) in enumerate(self.train_bar, 1):
+        for step, (noisy, clean, snr) in enumerate(self.train_bar, 1):
             noisy = noisy.to(self.device)
             clean = clean.to(self.device)
             noise = noisy - clean
@@ -265,20 +276,20 @@ class Trainer:
             self.writer.add_scalars('loss_s', {'loss_s': total_loss_s / step}, epoch)
             self.writer.add_scalars('loss_n', {'loss_n': total_loss_n / step}, epoch)
 
-    @torch.inference_mode()
+    @torch.no_grad()
     def _validation_epoch(self, epoch):
         total_loss = 0
         total_pesq_score = 0
 
         self.validation_bar = tqdm(self.validation_dataloader, ncols=135)
-        for step, (noisy, clean) in enumerate(self.validation_bar, 1):
-            noisy = noisy.to(self.device)
-            clean = clean.to(self.device)  
-            enhanced, _, _, _, _ = self.model(noisy)
-
-            loss = self.loss_func(enhanced, clean)
+        for step, (noisy, clean, snr) in enumerate(self.validation_bar, 1):
+            noisy = noisy.clone().to(self.device)
+            clean = clean.clone().to(self.device)  
+            # enhanced, _, _, _, _ = self.model(noisy)
+            enhanced = noisy.clone().to(self.device)
+            loss, loss_Mr, loss_Hyb = self.loss_func(enhanced, clean)
             if self.world_size > 1:
-                loss = reduce_value(loss)
+                loss = reduce_value(loss.clone())
             total_loss += loss.item()
 
             clean = clean.cpu().numpy()
@@ -309,7 +320,7 @@ class Trainer:
                 pesq_score = reduce_value(pesq_score)
             total_pesq_score += pesq_score
             
-            if self.rank == 0 and (epoch==1 or epoch %10 == 0) and step <= 20:
+            if self.rank == 0 and (epoch==1 or epoch %10 == 0) and step <= 10:
                 clean_path = os.path.join(self.sample_path, 'sample_{}_clean.wav'.format(step))
                 enhanced_path = os.path.join(self.sample_path, 'sample_{}_enh_epoch{}.wav'.format(step, str(epoch).zfill(3)))
                 if not os.path.exists(clean_path):
@@ -320,8 +331,8 @@ class Trainer:
             self.validation_bar.desc = 'validate[{}/{}][{}]'.format(
                 epoch, self.epochs + self.start_epoch-1, datetime.now().strftime("%Y-%m-%d-%H:%M"))
 
-            self.validation_bar.postfix = 'valid_loss={:.3f}, pesq={:.4f}'.format(
-                total_loss / step, total_pesq_score / step)
+            self.validation_bar.postfix = 'Mr_loss={:.3f}, Hyb_loss={:.3f}, valid_loss={:.3f}, pesq={:.4f}'.format(
+                loss_Mr, loss_Hyb, total_loss / step, total_pesq_score / step)
 
         if (self.world_size > 1) and (self.device != torch.device("cpu")):
             torch.cuda.synchronize(self.device)
@@ -341,7 +352,7 @@ class Trainer:
         total_pesq_score = 0
 
         self.validation_bar = tqdm(self.validation_dataloader, ncols=135)
-        for step, (noisy, clean) in enumerate(self.validation_bar, 1):
+        for step, (noisy, clean, snr) in enumerate(self.validation_bar, 1):
             noisy = noisy.to(self.device)
             clean = clean.to(self.device)  
             noise = noisy - clean
@@ -387,7 +398,7 @@ class Trainer:
                 pesq_score = reduce_value(pesq_score)
             total_pesq_score += pesq_score
             
-            if self.rank == 0 and (epoch==1 or epoch %10 == 0) and step <= 30:
+            if self.rank == 0 and (epoch==1 or epoch %10 == 0) and step <= 10:
                 noisy_path = os.path.join(self.sample_path, 'sample_{}_noisy.wav'.format(step))
                 clean_path = os.path.join(self.sample_path, 'sample_{}_clean.wav'.format(step))
                 noise_path = os.path.join(self.sample_path, 'sample_{}_noise.wav'.format(step))
@@ -428,11 +439,11 @@ class Trainer:
             if self.train_sampler is not None:
                 self.train_sampler.set_epoch(epoch)
 
-            self._set_train_mode()
-            self._dual_train_epoch(epoch)
+            self._set_train_mode()            
+            self._train_epoch(epoch)
 
             self._set_eval_mode()
-            valid_loss, score = self._dual_validation_epoch(epoch)
+            valid_loss, score = self._validation_epoch(epoch)
             
             if self.config['scheduler']['update_interval'] == 'epoch':
                 if self.config['scheduler']['use_plateau']:
@@ -454,14 +465,13 @@ class Trainer:
 
 if __name__ == '__main__':
     parser = argparse.ArgumentParser()
-    parser.add_argument('-C', '--config', default='configs/cfg_train.yaml')
-    parser.add_argument('-D', '--device', default='0', help='The index of the available devices, e.g. 0,1,2,3')
+    parser.add_argument('-C', '--config', default='configs/df_train_cfg.yaml')
+    parser.add_argument('-D', '--device', default='0,1', help='The index of the available devices, e.g. 0,1,2,3')
 
     args = parser.parse_args()
     os.environ["CUDA_VISIBLE_DEVICES"] = args.device
     args.world_size = len(args.device.split(','))
     config = OmegaConf.load(args.config)
-    config = OmegaConf.load('configs/cfg_train.yaml')
     # 将 OmegaConf 的 DictConfig/ListConfig 等转换为原生的 Python 容器（dict/list）
     # 这样 configs 中的 snd_db: [0, 15] 会成为 Python 列表 [0, 15]
     try:

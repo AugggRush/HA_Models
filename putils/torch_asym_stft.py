@@ -152,13 +152,13 @@ class STFT_asym(torch.nn.Module):
         """
         channels = input_data.shape[-1]
         self.num_samples = input_data.shape[1]
-        input_data = rearrange(input_data, 'b t c -> (b c) t').unsqueeze(1)
+        input_data = rearrange(input_data, 'b t c -> (b c) t').unsqueeze(1).contiguous()
 
         input_data = F.pad(
             input_data.unsqueeze(1),
             (self.pad_amount, self.pad_amount, 0, 0),
             mode='reflect')
-        input_data = input_data.squeeze(1)
+        input_data = input_data.squeeze(1).clone()
 
         forward_transform = F.conv1d(
             input_data,
@@ -167,7 +167,7 @@ class STFT_asym(torch.nn.Module):
             padding=0)
 
         # cutoff = int((self.filter_length / 2) + 1)
-        out = rearrange(forward_transform, '(b c) (ri f) t-> b c t f ri', c=channels, ri=2)
+        out = rearrange(forward_transform, '(b c) (ri f) t-> b c t f ri', c=channels, ri=2).contiguous()
 
         return out
 
@@ -182,8 +182,8 @@ class STFT_asym(torch.nn.Module):
         """
         assert len(cpx_ipt.shape) == 5, f"input spectrum shape must be [B C T F 2]"
         channels = cpx_ipt.shape[1]
-        cpx_ipt = rearrange(cpx_ipt, 'b c t f ri -> (b c) t (ri f)')
-        cpx_ipt = cpx_ipt.permute(0, 2, 1)
+        cpx_ipt = rearrange(cpx_ipt, 'b c t f ri -> (b c) t (ri f)').contiguous()
+        cpx_ipt = cpx_ipt.clone().permute(0, 2, 1).contiguous()
 
         inverse_transform = F.conv_transpose1d(cpx_ipt,
                                                self.inverse_basis,
@@ -211,7 +211,7 @@ class STFT_asym(torch.nn.Module):
         inverse_transform = inverse_transform[..., self.pad_amount:]
         inverse_transform = inverse_transform[..., :self.num_samples]
         inverse_transform = inverse_transform.squeeze(1)  # B T
-        inverse_transform = rearrange(inverse_transform, '(b c) t -> b t c', c=channels)
+        inverse_transform = rearrange(inverse_transform, '(b c) t -> b t c', c=channels).contiguous()
 
         return inverse_transform
 
@@ -300,7 +300,7 @@ class STFT_asym(torch.nn.Module):
 
 
 def Test_stft():
-    audio_np, sr = sf.read('/data/goodman/Ha_simu/stepped_sweep_24kHz_32bit.wav', dtype="float32")
+    audio_np, sr = sf.read('/data/goodman/data/ha_fix_test/wav/sample_0048_snr_0.wav.wav', dtype="float32")
     audio_torch = torch.from_numpy(audio_np).unsqueeze(0).to("cuda:0").detach()
     audio_torch = torch.stack([audio_torch, audio_torch, audio_torch], dim=-1)
     print(f"shape of audio_torch {audio_torch.shape}")

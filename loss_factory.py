@@ -97,10 +97,47 @@ class MultiResolutionSTFTLoss(nn.Module):
         loss = 0.0
         for f in self.stft_losses:
             loss += f(x, y)
-        loss /= len(self.stft_losses)
+        loss = loss / len(self.stft_losses)
         return loss
     
+class DfLoss(nn.Module):
+    def __init__(self,            
+                fft_sizes=[2048, 1024, 512],
+                hop_sizes=[240, 120, 50],
+                win_lengths=[1200, 600, 240],
+                window="hann_window",
+                compress_factor=0.3,
+                eps=1e-12,
+                lamda_ri=30,
+                lamda_mag=70,                
+                lambda_Mr = 1.0,
+                lambda_Hyb = 1.0
+            ):
+        super().__init__()
+        self.loss_mr = MultiResolutionSTFTLoss(
+            fft_sizes,
+            hop_sizes,
+            win_lengths,
+            window
+            )
+        self.loss_hyb = HybridLoss(
+            fft_sizes[-1], 
+            hop_sizes[-1], 
+            win_lengths[-1],
+            compress_factor,
+            eps,
+            lamda_ri,
+            lamda_mag)
+        
+        self.lambda_Mr = lambda_Mr
+        self.lambda_Hyb = lambda_Hyb
 
+    def forward(self, y_pred, y_true):
+        y_pred = y_pred.clone()
+        y_true = y_true.clone()
+        loss1 = self.loss_mr(y_pred, y_true)
+        loss2 = self.loss_hyb(y_pred, y_true)
+        return self.lambda_Mr * loss1 + self.lambda_Hyb * loss2, loss1, loss2
 
 if __name__=='__main__':
     a = torch.randn(2, 10000)

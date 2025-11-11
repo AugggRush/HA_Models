@@ -31,8 +31,8 @@ def process_scp_file(file_path):
     return avg_scores
 
 
-def plot_multiple_results(results_dict, save_path='pesq_comparison.png'):
-    """绘制多个SCP文件的PESQ分数对比图"""
+def plot_multiple_results(results_dict, save_path='ESTOI_comparison.png'):
+    """绘制多个SCP文件的ESTOI分数对比图"""
     if not results_dict:
         print("没有数据可绘制")
         return
@@ -50,7 +50,8 @@ def plot_multiple_results(results_dict, save_path='pesq_comparison.png'):
         scores = [data.get(snr, 0) for snr in standard_snrs]
         plt.plot(standard_snrs, scores, 'o-', label=label, linewidth=2, markersize=8)
     
-    plt.title('PESQ compare', fontsize=14, pad=20)
+    png_name = save_path.split('/')[-1].split('_')[0]
+    plt.title(png_name, fontsize=14, pad=20)
     plt.xlabel('snr (dB)', fontsize=12)
     plt.ylabel('average score', fontsize=12)
     plt.xticks(standard_snrs)
@@ -89,10 +90,12 @@ if __name__ == "__main__":
     # 这里添加您的SCP文件路径列表
     scp_files = [
         '/minioData/goodman/train_data/ha_lmdb/eval_sets/gtcrn_dual_decoder_speechCnoise_2025-10-14-10h18m/' \
-        'scoring_dnsmos/P808_MOS.scp',
-        '/minioData/goodman/train_data/ha_lmdb/eval_sets/without_process/' \
-        'ori_scoring_dnsmos/P808_MOS.scp',
+        'scoring_intrusive_noise/ESTOI.scp',
+        # '/minioData/goodman/train_data/ha_lmdb/eval_sets/HA_nr_demo_output/' \
+        # 'scoring_intrusive/PESQ.scp',        
+        # '/minioData/goodman/train_data/ha_lmdb/eval_sets/without_process/' \
+        # 'ori_scoring_intrusive/PESQ.scp',
     ]
     png_save_path = '/minioData/goodman/train_data/ha_lmdb/eval_sets/gtcrn_dual_decoder_speechCnoise_2025-10-14-10h18m/' \
-    'scoring_intrusive/P808_gtcrn_dual_decoder_speechCnoise.png'
+    'scoring_intrusive_noise/ESTOI_gtcrn_dual_decoder_speechCnoise_noise.png'
     main(scp_files, png_save_path)
