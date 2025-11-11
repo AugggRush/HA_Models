@@ -344,8 +344,8 @@ class GTCRN(nn.Module):
 
         self.encoder = Encoder()
         
-        self.dpgrnn1 = DPGRNN(16, 11, 16)
-        self.dpgrnn2 = DPGRNN(16, 11, 16)
+        self.dpgrnn1 = DPGRNN(16, 11, 16, 16)
+        self.dpgrnn2 = DPGRNN(16, 11, 16, 16)
         
         self.decoder = Decoder()
 

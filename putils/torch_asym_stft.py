@@ -300,7 +300,7 @@ class STFT_asym(torch.nn.Module):
 
 
 def Test_stft():
-    audio_np, sr = sf.read('/data/goodman/data/ha_fix_test/wav/sample_0048_snr_0.wav.wav', dtype="float32")
+    audio_np, sr = sf.read('/data/goodman/data/ha_fix_test/wav/sample_0048_snr_0.wav', dtype="float32")
     audio_torch = torch.from_numpy(audio_np).unsqueeze(0).to("cuda:0").detach()
     audio_torch = torch.stack([audio_torch, audio_torch, audio_torch], dim=-1)
     print(f"shape of audio_torch {audio_torch.shape}")

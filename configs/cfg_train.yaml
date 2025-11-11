@@ -24,13 +24,15 @@ FFT:
   win_length: 512
 
 loss:
-  n_fft: ${FFT.n_fft}
-  hop_len: ${FFT.hop_length}
-  win_len: ${FFT.win_length}
+  fft_sizes: [512, 256, 128]
+  hop_sizes: [192, 96, 48]
+  win_lengths: [512, 256, 128]
   compress_factor: 0.3
   eps: 1e-12
   lamda_ri: 30
   lamda_mag: 70
+  lambda_Mr: 1.0
+  lambda_Hyb: 1.0
 
 train_dataset: 
   clean_file_path: 'prepare_datasets/train_clean_24k.csv'
