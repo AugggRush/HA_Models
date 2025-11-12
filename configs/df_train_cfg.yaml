@@ -72,7 +72,7 @@ train_dataset:
   snr_db: [0, 25]
   dr_db: [-35, -15]
   pure_noise_prob: 0.1
-  random_seed: 0511
+  random_seed: 1111
   max_readers: 256
 
 train_dataloader: 
@@ -94,7 +94,7 @@ validation_dataset:
   snr_db: [0, 25]
   dr_db: [-35, -15]
   pure_noise_prob: 0.1
-  random_seed: 2021
+  random_seed: 2025
   max_readers: 256
 
 validation_dataloader:

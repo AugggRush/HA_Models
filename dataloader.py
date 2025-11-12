@@ -1105,6 +1105,24 @@ class HaDataSetsFromLMDB(torch.utils.data.Dataset):
             
         return noisy, clean, snr
 
+    def make_wavs_noisy(self, idx, snr):
+        """将验证集中的干净语音转换为带噪语音并保存到指定目录"""
+        self.assigned_snr_db = snr  # 强制使用指定的 SNR
+        if idx < len(self):
+            noisy, clean, snr_db = self.__getitem__(idx)
+            noisy_np = noisy.numpy()
+            clean_np = clean.numpy()
+            noise_np =noisy_np - clean_np
+        # 准备数据字典
+        sample_data = {
+            'snr': snr_db,
+            'noisy': noisy_np,
+            'clean': clean_np,
+            'noise': noise_np,
+            'index': idx
+        }                
+        return sample_data
+
 def lmdb_worker_init_fn(worker_id):
     """DataLoader工作进程初始化函数"""
     # 确保每个工作进程有独立的随机种子
@@ -1116,7 +1134,7 @@ if __name__=='__main__':
     # pass
     from omegaconf import OmegaConf
     
-    config = OmegaConf.load('configs/cfg_train.yaml')
+    config = OmegaConf.load('configs/df_train_cfg.yaml')
     # 将 OmegaConf 的 DictConfig/ListConfig 等转换为原生的 Python 容器（dict/list）
     # 这样 configs 中的 snd_db: [0, 15] 会成为 Python 列表 [0, 15]
     try:
@@ -1124,94 +1142,66 @@ if __name__=='__main__':
     except Exception:
         # 若转换失败则保持原始 config（兼容性），后续可手动转换字段
         pass
+  
+    # train_dataset = HaSimuDataset(**config['validation_dataset'])
+    # train_dataset.sample_data_per_epoch()
+    # # 创建转换器并执行转换
+    # converter = HaSimuDatasetToLMDB(train_dataset, './prepare_datasets/training_audio_24k_noDereverb.lmdb', 4)
+    # converter.convert_to_lmdb()
 
-        
-    train_dataset = HaSimuDataset(**config['train_dataset'])
-    train_dataset.sample_data_per_epoch()
-    # 创建转换器并执行转换
-    converter = HaSimuDatasetToLMDB(train_dataset, './prepare_datasets/training_audio_24k_noDereverb.lmdb', 4)
-    converter.convert_to_lmdb()
+    # valid_dataset = HaSimuDataset(**config['validation_dataset'])
+    # # 创建转换器并执行转换
+    # converter = HaSimuDatasetToLMDB(valid_dataset, './prepare_datasets/validation_audio_24k_noDereverb.lmdb', 4)
+    # converter.convert_to_lmdb()
 
-    valid_dataset = HaSimuDataset(**config['validation_dataset'])
-    # 创建转换器并执行转换
-    converter = HaSimuDatasetToLMDB(valid_dataset, './prepare_datasets/validation_audio_24k_noDereverb.lmdb', 4)
-    converter.convert_to_lmdb()
+    # 输出目录
+    output_dir = "/minioData/goodman/train_data/ha_lmdb/valid_demo_noReverb/"
+    os.makedirs(output_dir, exist_ok=True)
 
-    # output_dir = "/minioData/goodman/train_data/ha_lmdb/eval_sets_int32/"
-    # os.makedirs(output_dir, exist_ok=True)
+    # 从 LMDB 数据集读取
+    datasets = HaDataSetsFromLMDB('./prepare_datasets/validation_audio_24k_noDereverb.lmdb', max_reader=512)
 
-    # # 保存训练数据的音频
-    # datasets = HaDataSetsFromLMDB('./prepare_datasets/validation_audio_24k_pure10_trim200.lmdb', max_reader=512)
-    # dataloader = torch.utils.data.DataLoader(
-    #     datasets, 
-    #     batch_size=16, 
-    #     shuffle=True, 
-    #     num_workers=4, 
-    #     pin_memory=False,
-    #     worker_init_fn=lmdb_worker_init_fn  # 添加worker初始化函数
-    # )
-    
-    # # 初始化计数器
-    # # 创建SNR子目录
-    # # 创建音频类型子目录 (noisy, noise, clean)
-    # audio_types = ['noisy', 'noise', 'clean']
-    # for audio_type in audio_types:
-    #     audio_type_dir = os.path.join(output_dir, audio_type)
-    #     os.makedirs(audio_type_dir, exist_ok=True)    
-    # snr_values = [0, 5, 10, 15, 20] 
-    # snr_counts = {0: 0, 5: 0, 10: 0, 15: 0, 20: 0}
-    # count = 0
-    # target_count = 100 # 每个SNR需要100条样本
-    # # 用于存储符合条件的样本
-    # collected_samples = {snr: [] for snr in snr_values}
-    # print("开始收集样本...")
-    # while(1):
-    #     index = np.random.randint(0, len(datasets)-1)
-    #     for snr in snr_values:
-    #         datas =  train_dataset.make_wavs_noisy(index, snr=snr)
-    #         collected_samples[snr].append(datas)
-    #     # 检查是否已经收集足够样本
-    #     if (count >= target_count):
-    #         break
-    #     count += 1
+    # 创建子目录
+    audio_types = ['noisy', 'noise', 'clean']
+    for audio_type in audio_types:
+        os.makedirs(os.path.join(output_dir, audio_type), exist_ok=True)
 
-    # print("样本收集完成，开始保存文件...")
-    # # 保存音频文件 - 按照音频类型分类存储
-    # for snr in snr_values:
-    #     for sample in collected_samples[snr]:
-    #         # 构建文件名（包含SNR信息）
-    #         i = sample['index']
-    #         snr = sample['snr']
-    #         file_prefix = f"sample_{i:04d}_snr_{snr}"
-            
-    #         # 将张量转换为numpy数组（假设音频数据是单声道）
-    #         noisy_np = (sample['noisy'] * 2147483647).astype(np.int32)
-    #         clean_np = (sample['clean'] * 2147483647).astype(np.int32)
-    #         noise_np = (sample['noise'] * 2147483647).astype(np.int32)
-            
-    #         # 分别保存到对应的音频类型文件夹
-    #         try:
-    #             # 假设采样率为24000Hz，根据实际情况调整
-    #             sample_rate = 24000
-                
-    #             # 保存noisy音频到noisy文件夹
-    #             noisy_path = os.path.join(output_dir, 'noisy', f"{file_prefix}.wav")
-    #             sf.write(noisy_path, noisy_np, sample_rate,  subtype='PCM_32')
-                
-    #             # 保存clean音频到clean文件夹
-    #             clean_path = os.path.join(output_dir, 'clean', f"{file_prefix}.wav")
-    #             sf.write(clean_path, clean_np, sample_rate,  subtype='PCM_32')
-                
-    #             # 保存noise音频到noise文件夹
-    #             noise_path = os.path.join(output_dir, 'noise', f"{file_prefix}.wav")
-    #             sf.write(noise_path, noise_np, sample_rate,  subtype='PCM_32')
-                
-    #         except Exception as e:
-    #             print(f"保存文件时出错: {e}")
+    # 随机抽取 100 个样本（不足则放回抽样）
+    num_to_save = 100
+    total = len(datasets)
+    replace = total < num_to_save
+    indices = np.random.choice(total, size=num_to_save, replace=replace)
 
-    # print("所有音频文件保存完成！")
-    # print(f"文件保存结构:")
-    # print(f"{output_dir}/")
-    # print(f"├── noisy/     # 存放含噪音频文件，文件名包含SNR信息")
-    # print(f"├── clean/     # 存放纯净音频文件，文件名包含SNR信息") 
-    # print(f"└── noise/     # 存放噪声音频文件，文件名包含SNR信息")
+    sample_rate = getattr(datasets, 'sample_rate', 24000)
+    saved = 0
+    for idx in indices:
+        try:
+            noisy, clean, snr = datasets[int(idx)]
+
+            # 转 numpy
+            if isinstance(noisy, torch.Tensor):
+                noisy_np = noisy.cpu().numpy()
+            else:
+                noisy_np = np.asarray(noisy)
+            if isinstance(clean, torch.Tensor):
+                clean_np = clean.cpu().numpy()
+            else:
+                clean_np = np.asarray(clean)
+
+            # 计算 noise
+            noise_np = noisy_np - clean_np
+
+            # 处理 snr，四舍五入
+            snr_val = 0.0 if snr is None else float(snr)
+            snr_round = int(round(snr_val))
+
+            prefix = f"sample_{int(idx):05d}_snr_{snr_round}"
+            sf.write(os.path.join(output_dir, 'noisy', prefix + "_noisy.wav"), noisy_np, sample_rate)
+            sf.write(os.path.join(output_dir, 'clean', prefix + "_clean.wav"), clean_np, sample_rate)
+            sf.write(os.path.join(output_dir, 'noise', prefix + "_noise.wav"), noise_np, sample_rate)
+
+            saved += 1
+        except Exception as e:
+            print(f"保存样本 idx={idx} 失败: {e}")
+
+    print(f"完成：已保存 {saved}/{num_to_save} 个样本到 {output_dir}")

@@ -141,7 +141,10 @@ def process_one_pair(data_pair):
     uid, ref_path, inf_path = data_pair
     ref, fs = sf.read(ref_path, dtype="float32")
     inf, fs2 = sf.read(inf_path, dtype="float32")
-    assert fs == fs2, (fs, fs2)
+    # assert fs == fs2, (fs, fs2)
+    if fs != fs2:
+        inf = librosa.resample(inf, orig_sr=fs2, target_sr=fs)
+        fs2 = fs
     assert ref.shape == inf.shape, (ref.shape, inf.shape)
     scores = {}
     for metric in METRICS:

@@ -40,7 +40,7 @@ def plot_multiple_results(results_dict, save_path='ESTOI_comparison.png'):
     plt.figure(figsize=(10, 6))
     
     # 定义标准信噪比顺序
-    standard_snrs = [5, 10, 15, 19]
+    standard_snrs = [0, 5, 10, 15, 20]
     
     # 为每个SCP文件绘制一条线
     for label, data in results_dict.items():
@@ -89,13 +89,12 @@ def main(scp_files, png_save):
 if __name__ == "__main__":
     # 这里添加您的SCP文件路径列表
     scp_files = [
-        '/minioData/goodman/train_data/ha_lmdb/eval_sets/gtcrn_dual_decoder_speechCnoise_2025-10-14-10h18m/' \
-        'scoring_intrusive_noise/ESTOI.scp',
-        # '/minioData/goodman/train_data/ha_lmdb/eval_sets/HA_nr_demo_output/' \
-        # 'scoring_intrusive/PESQ.scp',        
-        # '/minioData/goodman/train_data/ha_lmdb/eval_sets/without_process/' \
-        # 'ori_scoring_intrusive/PESQ.scp',
+        '/minioData/goodman/train_data/ha_lmdb/evalsets_noReverb/Ha_base_69MMacs_enh/' \
+        'scoring_intrusive/SISNR.scp',
+        '/minioData/goodman/train_data/ha_lmdb/evalsets_noReverb/gtcrn_dual_decoder_stepUpdate_16ch_enh/' \
+        'scoring_intrusive/SISNR.scp',    
+        '/minioData/goodman/train_data/ha_lmdb/evalsets_noReverb/dfnet_92MMacs_8ch_hybLoss_mrLoss_enh/' \
+        'scoring_intrusive/SISNR.scp',
     ]
-    png_save_path = '/minioData/goodman/train_data/ha_lmdb/eval_sets/gtcrn_dual_decoder_speechCnoise_2025-10-14-10h18m/' \
-    'scoring_intrusive_noise/ESTOI_gtcrn_dual_decoder_speechCnoise_noise.png'
+    png_save_path = '/data/goodman/torch_nn_train/SEtrain/Ha_denoise/plot_results/SISNR_comparison.png'
     main(scp_files, png_save_path)

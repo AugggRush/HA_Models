@@ -4,8 +4,8 @@ test_dataset:
   noise_dir: /minioData/goodman/train_data/ha_lmdb/evalsets_noReverb/noise/
 
 network:
-  exp_path: /data/goodman/torch_nn_train/SEtrain/Ha_denoise/dfnet_92MMacs_8ch_hybLoss_mrLoss_2025-11-11-06h36m
+  exp_path: /data/goodman/torch_nn_train/SEtrain/Ha_denoise/Ha_base_69MMacs
   config: ${network.exp_path}/config.yaml
-  ckpt_name: model_086
+  ckpt_name: Model
   checkpoint: ${network.exp_path}/checkpoints/${network.ckpt_name}.tar
-  enh_folder: /minioData/goodman/train_data/ha_lmdb/evalsets_noReverb/dfnet_92MMacs_8ch_hybLoss_mrLoss_enh/
+  enh_folder: /minioData/goodman/train_data/ha_lmdb/evalsets_noReverb/Ha_base_69MMacs_enh/
