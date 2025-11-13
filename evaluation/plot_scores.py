@@ -90,6 +90,36 @@ if __name__ == "__main__":
     # 这里添加您的SCP文件路径列表
     scp_files = [
         '/minioData/goodman/train_data/ha_lmdb/evalsets_noReverb/Ha_base_69MMacs_enh/' \
+        'scoring_intrusive/PESQ.scp',
+        '/minioData/goodman/train_data/ha_lmdb/evalsets_noReverb/gtcrn_dual_decoder_stepUpdate_16ch_enh/' \
+        'scoring_intrusive/PESQ.scp',    
+        '/minioData/goodman/train_data/ha_lmdb/evalsets_noReverb/dfnet_92MMacs_8ch_hybLoss_mrLoss_enh/' \
+        'scoring_intrusive/PESQ.scp',
+    ]
+    png_save_path = '/data/goodman/torch_nn_train/SEtrain/Ha_denoise/plot_results/PESQ_comparison.png'
+    main(scp_files, png_save_path)
+    scp_files = [
+        '/minioData/goodman/train_data/ha_lmdb/evalsets_noReverb/Ha_base_69MMacs_enh/' \
+        'scoring_intrusive/STOI.scp',
+        '/minioData/goodman/train_data/ha_lmdb/evalsets_noReverb/gtcrn_dual_decoder_stepUpdate_16ch_enh/' \
+        'scoring_intrusive/STOI.scp',    
+        '/minioData/goodman/train_data/ha_lmdb/evalsets_noReverb/dfnet_92MMacs_8ch_hybLoss_mrLoss_enh/' \
+        'scoring_intrusive/STOI.scp',
+    ]
+    png_save_path = '/data/goodman/torch_nn_train/SEtrain/Ha_denoise/plot_results/STOI_comparison.png'
+    main(scp_files, png_save_path)
+    scp_files = [
+        '/minioData/goodman/train_data/ha_lmdb/evalsets_noReverb/Ha_base_69MMacs_enh/' \
+        'scoring_intrusive/SDR.scp',
+        '/minioData/goodman/train_data/ha_lmdb/evalsets_noReverb/gtcrn_dual_decoder_stepUpdate_16ch_enh/' \
+        'scoring_intrusive/SDR.scp',    
+        '/minioData/goodman/train_data/ha_lmdb/evalsets_noReverb/dfnet_92MMacs_8ch_hybLoss_mrLoss_enh/' \
+        'scoring_intrusive/SDR.scp',
+    ]
+    png_save_path = '/data/goodman/torch_nn_train/SEtrain/Ha_denoise/plot_results/SDR_comparison.png'
+    main(scp_files, png_save_path)
+    scp_files = [
+        '/minioData/goodman/train_data/ha_lmdb/evalsets_noReverb/Ha_base_69MMacs_enh/' \
         'scoring_intrusive/SISNR.scp',
         '/minioData/goodman/train_data/ha_lmdb/evalsets_noReverb/gtcrn_dual_decoder_stepUpdate_16ch_enh/' \
         'scoring_intrusive/SISNR.scp',    
@@ -97,4 +127,4 @@ if __name__ == "__main__":
         'scoring_intrusive/SISNR.scp',
     ]
     png_save_path = '/data/goodman/torch_nn_train/SEtrain/Ha_denoise/plot_results/SISNR_comparison.png'
-    main(scp_files, png_save_path)
+    main(scp_files, png_save_path)            

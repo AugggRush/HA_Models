@@ -3,12 +3,14 @@ GTCRN: ShuffleNetV2 + SFE + TRA + 2 DPGRNN
 Ultra tiny, 33.0 MMACs, 23.67 K params
 """
 import sys
-sys.path.append("../")
+sys.path.append(".")
+sys.path.append("..")
 import torch
 import numpy as np
 import torch.nn as nn
 from einops import rearrange
 import putils.torch_asym_stft as torch_asym_stft
+from models.lisennet.generator.dpr_layer import DPR, CustomLayerNorm
 
 class ERB(nn.Module):
     def __init__(self, erb_subband_1, erb_subband_2, nfft=512, high_lim=8000, fs=16000):
@@ -232,11 +234,11 @@ class Encoder(nn.Module):
     def __init__(self):
         super().__init__()
         self.en_convs = nn.ModuleList([
-            ConvBlock(3*3, 16, (1,5), stride=(1,2), padding=(0,2), use_deconv=False, is_last=False),
-            ConvBlock(16, 16, (1,5), stride=(1,2), padding=(0,2), groups=2, use_deconv=False, is_last=False),
-            GTConvBlock(16, 16, (3,3), stride=(1,1), padding=(0,1), dilation=(1,1), use_deconv=False),
-            GTConvBlock(16, 16, (3,3), stride=(1,1), padding=(0,1), dilation=(2,1), use_deconv=False),
-            GTConvBlock(16, 16, (3,3), stride=(1,1), padding=(0,1), dilation=(5,1), use_deconv=False)
+            ConvBlock(3*3*2, 8, (1,5), stride=(1,2), padding=(0,2), groups=2, use_deconv=False, is_last=False),
+            ConvBlock(8, 4, (1,5), stride=(1,2), padding=(0,2), groups=2, use_deconv=False, is_last=False),
+            GTConvBlock(4, 2, (3,3), stride=(1,1), padding=(0,1), dilation=(1,1), use_deconv=False),
+            GTConvBlock(4, 2, (3,3), stride=(1,1), padding=(0,1), dilation=(2,1), use_deconv=False),
+            GTConvBlock(4, 2, (3,3), stride=(1,1), padding=(0,1), dilation=(5,1), use_deconv=False)
         ])
 
     def forward(self, x):
@@ -255,16 +257,26 @@ class LearnableTanh2d(nn.Module):
 
     def forward(self, x):
         return self.beta * torch.tanh(self.slope * x)
+    
+class LearnableSigmoid2d(nn.Module):
+    def __init__(self, in_features, beta=1):
+        super().__init__()
+        self.beta = beta
+        self.slope = nn.Parameter(torch.ones(in_features, 1, 1))
+        self.slope.requires_grad = True
 
+    def forward(self, x):
+        return self.beta * torch.sigmoid(self.slope * x)
+    
 class Decoder(nn.Module):
     def __init__(self):
         super().__init__()
         self.de_convs = nn.ModuleList([
-            GTConvBlock(16, 16, (3,3), stride=(1,1), padding=(2*5,1), dilation=(5,1), use_deconv=True),
-            GTConvBlock(16, 16, (3,3), stride=(1,1), padding=(2*2,1), dilation=(2,1), use_deconv=True),
-            GTConvBlock(16, 16, (3,3), stride=(1,1), padding=(2*1,1), dilation=(1,1), use_deconv=True),
-            ConvBlock(16, 16, (1,5), stride=(1,2), padding=(0,2), groups=2, use_deconv=True, is_last=False),
-            ConvBlock(16, 2, (1,5), stride=(1,2), padding=(0,2), use_deconv=True, is_last=False)
+            GTConvBlock(4, 2, (3,3), stride=(1,1), padding=(2*5,1), dilation=(5,1), use_deconv=True),
+            GTConvBlock(4, 2, (3,3), stride=(1,1), padding=(2*2,1), dilation=(2,1), use_deconv=True),
+            GTConvBlock(4, 2, (3,3), stride=(1,1), padding=(2*1,1), dilation=(1,1), use_deconv=True),
+            ConvBlock(4, 8, (1,5), stride=(1,2), padding=(0,2), groups=2, use_deconv=True, is_last=False),
+            ConvBlock(8, 2, (1,5), stride=(1,2), padding=(0,2), groups=2, use_deconv=True, is_last=True)
         ])
 
     def forward(self, x, en_outs, de_s = None):
@@ -327,143 +339,237 @@ def deepfilter_complex_filtering_1x1_conv_einsum(spectrum, mask):
     
     return filtered_spectrum
 
-class GTCRN(nn.Module):
+class PreEnhNet(nn.Module):
     def __init__(
         self,
         n_fft=256,
         hop_len=48,
-        win_len=192
+        win_len=256,
+        in_channels=1,
+        emb_dim=8,
+        hidden_dim=8 * 2,
+        n_freqs=41,
+        dropout_p=0.1,        
     ):
         super().__init__()
         self.n_fft = n_fft
         self.hop_len = hop_len
         self.win_len = win_len
         
-        self.erb = ERB(21, 20, nfft=n_fft, high_lim=12000, fs=24000)
+        self.conv_1 = nn.Sequential(
+            nn.Conv2d(in_channels, emb_dim//4, (1, 1), (1, 1)),
+            CustomLayerNorm((1, n_freqs), stat_dims=(1, 3)),
+            nn.PReLU(emb_dim//4),
+        )
+        self.conv_2 = nn.Sequential(
+            nn.ConstantPad2d((1, 1, 1, 0), value=0.0),
+            nn.Conv2d(emb_dim//4, emb_dim//2, (2, 3), (1, 2), groups=emb_dim//4), # 32
+            CustomLayerNorm((1, n_freqs//2), stat_dims=(1, 3)),
+            nn.PReLU(emb_dim//2),
+        )
+        self.conv_3 = nn.Sequential(
+            nn.ConstantPad2d((1, 1, 1, 0), value=0.0),
+            nn.Conv2d(emb_dim//2, emb_dim, (2, 3), (1, 2), groups=emb_dim//2),  # 16
+            CustomLayerNorm((1, n_freqs//4), stat_dims=(1, 3)),
+            nn.PReLU(emb_dim),
+        )
+
+        self.dpr = DPGRNN(emb_dim, n_freqs//4, hidden_dim, emb_dim)
+        self.linear_block = nn.Sequential(
+            nn.LayerNorm((emb_dim * (n_freqs//4))),
+            nn.Linear((emb_dim * (n_freqs//4)), n_freqs),
+            nn.PReLU(),
+            nn.Dropout(dropout_p)
+        )
+        self.lsigmoid = LearnableSigmoid2d(n_freqs, beta=1)
+
+    def forward(self, x):
+        # x:(b,d,t,f)
+        x = self.conv_1(x)
+        x = self.conv_2(x)
+        x = self.conv_3(x)
+        
+        x = self.dpr(x)
+        x = x.permute(0, 2, 3, 1).flatten(2).contiguous()  # (b,t,d*f)
+
+        x = self.linear_block(x).unsqueeze(-1)  # (b,t,f,1)
+        x = self.lsigmoid(x.permute(0,2,1,3)).permute(0,3,2,1)  # (b,1,t,f)
+        return x
+
+class GTCRN(nn.Module):
+    def __init__(
+        self,
+        n_fft=256,
+        hop_len=48,
+        win_len=192,
+        all_stage=False
+    ):
+        super().__init__()
+        self.n_fft = n_fft
+        self.hop_len = hop_len
+        self.win_len = win_len
+        
+        self.erb1 = ERB(5,19, nfft=n_fft, high_lim=12000, fs=24000)
+        self.erb1.requires_grad_(False)
+
         self.sfe = SFE(3, 1)
+        self.preh = PreEnhNet(
+            n_fft=n_fft,
+            hop_len=hop_len,
+            win_len=win_len,
+            in_channels=3,
+            emb_dim=8,
+            hidden_dim=8*2,
+            n_freqs=24,
+            dropout_p=0.1
+        )
+        self.all_stage = all_stage
+        if all_stage:
 
-        self.encoder = Encoder()
-        
-        self.dpgrnn1 = DPGRNN(16, 11, 16, 16)
-        self.dpgrnn2 = DPGRNN(16, 11, 16, 16)
-        
-        self.decoder = Decoder()
+            self.erb2 = ERB(21, 20, nfft=n_fft, high_lim=12000, fs=24000)
+            self.erb2.requires_grad_(False)
+            self.encoder = Encoder()
+            
+            self.dpgrnn1 = DPGRNN(4, 11, 8, 4)
+            self.dpgrnn2 = DPGRNN(4, 11, 8, 4)
+            
+            self.decoder = Decoder()
 
-        self.num_features = 41
-        self.m_lsigmoid = LearnableTanh2d(self.num_features, beta=1)
+            self.num_features1 = 24
+            self.num_features2 = 41
 
-        self.mask = Mask()
+            self.mask = Mask()
 
-        self.stft = torch_asym_stft.STFT_asym(filter_length=n_fft, hop_length=hop_len, win_length=win_len, window='asqrthann', M=hop_len)
+        self.stft = torch_asym_stft.STFT_asym(
+            filter_length=n_fft, hop_length=hop_len, 
+            win_length=win_len, window='asqrthann', M=hop_len)
 
         # 固定这些模块的参数
-        self.erb.requires_grad_(False)
         self.sfe.requires_grad_(False)
         self.stft.requires_grad_(False)
+
+    def load_preh_from_checkpoint(self, ckpt_path, map_location=None, strict=False, prefix="preh."):
+        """
+        从 checkpoint 中只加载 PreEnhNet(self.preh) 的参数到当前模型。
+        支持以下几种 checkpoint/state_dict 格式：
+         - torch.save(model.state_dict(), path)
+         - torch.save({'state_dict': model.state_dict(), ...}, path)
+         - DataParallel 保存时带 'module.' 前缀
+        参数:
+         - ckpt_path: checkpoint 文件路径
+         - map_location: 传给 torch.load 的 map_location（默认 cpu）
+         - strict: 传给 load_state_dict 的 strict
+         - prefix: 在 state_dict 中定位 preh 的键前缀，默认 'preh.'
+        返回:
+         - loaded_keys_count: 成功加载的键数量
+        典型用法（Trainer 中）：
+         gtcrn = GTCRN(all_stage=True)
+         gtcrn.load_preh_from_checkpoint('pretrained_preh.pth')
+        """
+        map_location = map_location if map_location is not None else "cpu"
+        ckpt = torch.load(ckpt_path, map_location=map_location)
+
+        # 提取 state_dict
+        if isinstance(ckpt, dict) and "state_dict" in ckpt:
+            state_dict = ckpt["state_dict"]
+        elif isinstance(ckpt, dict) and all(isinstance(v, torch.Tensor) for v in ckpt.values()):
+            state_dict = ckpt
+        else:
+            # 其他情况直接当作 state_dict 处理
+            state_dict = ckpt
+
+        # 处理 DataParallel 的 module. 前缀
+        def _strip_module(key):
+            if key.startswith("module."):
+                return key[len("module."):]
+            return key
+
+        # 收集以 prefix 开头的键
+        preh_state = {}
+        for k, v in state_dict.items():
+            k_strip = _strip_module(k)
+            if k_strip.startswith(prefix):
+                new_k = k_strip[len(prefix):]  # 去掉 'preh.' 前缀后传给 self.preh
+                preh_state[new_k] = v
+
+        if len(preh_state) == 0:
+            print(f"[load_preh_from_checkpoint] 未在 checkpoint 中找到以 '{prefix}' 为前缀的参数，请确认 checkpoint 内容。")
+            return 0
+
+        # 加载到 self.preh
+        try:
+            missing, unexpected = self.preh.load_state_dict(preh_state, strict=strict)
+            # load_state_dict 返回 None 或 NamedTuple（PyTorch 2.x 会抛出异常或返回 None）
+            # 统一打印信息
+            print(f"[load_preh_from_checkpoint] 从 {ckpt_path} 加载 PreEnhNet 参数，键数量: {len(preh_state)}， strict={strict}")
+            return len(preh_state)
+        except Exception as e:
+            # 在旧版本 PyTorch 上 load_state_dict 直接接受 dict 并返回 None 或抛异常
+            # 为兼容性，尝试用 non-strict 方式加载以打印更多信息
+            if strict:
+                print(f"[load_preh_from_checkpoint] 严格加载失败，错误: {e}。可尝试 strict=False 继续。")
+                raise
+            else:
+                # 最后尝试宽松加载
+                self.preh.load_state_dict(preh_state, strict=False)
+                print(f"[load_preh_from_checkpoint] 宽松模式加载成功（strict=False），键数量: {len(preh_state)}")
+                return len(preh_state)
 
     def forward(self, x):
         """
         x: (B, L)
         """
-        device = x.device
         n_samples = x.shape[1]
         x = x.unsqueeze(-1) # B, T, C
         spec = self.stft.transform_cpx(x) # B, C, T, F, 2
-        spec = spec.squeeze(1).permute(0, 2, 1, 3) # B, F, T, 2
+        spec = spec.squeeze(1) # B, T, F, 2
 
-        spec_real = spec[..., 0].permute(0,2,1) # B, T, F
-        spec_imag = spec[..., 1].permute(0,2,1)
+        spec_real = spec[..., 0] # B, T, F
+        spec_imag = spec[..., 1]
         spec_mag = torch.sqrt(spec_real**2 + spec_imag**2 + 1e-12)
+
         feat = torch.stack([spec_mag, spec_real, spec_imag], dim=1)  # (B,3,T,F)
-        
-        spec = spec.permute(0,3,2,1)  # (B,2,T,F)
+        # Pre-enhancement
+        p_feat = self.erb1.bm(feat)  # (B,3,T,24)
+        p_feat = self.preh(p_feat)  # (B,1,T,F)
+        pm = self.erb1.bs(p_feat)  # (B,1,T,F)
+        if not self.all_stage:
+            spec_enh = pm * spec.permute(0,3,1,2)  # (B,2,T,F)
+        else:
+            feat_enh = pm * feat  # (B,3,T,F)
 
-        feat = self.erb.bm(feat)  # (B,3,T,97)
-        feat = self.sfe(feat)     # (B,9,T,97)
+            feat_cat = torch.cat([feat, feat_enh], dim=1)  # (B,6,T,F)
+            feat = self.erb2.bm(feat_cat)  # (B,6,T,97)
+            feat = self.sfe(feat)     # (B,18,T,97)
 
-        feat, en_outs = self.encoder(feat)
-        
-        feat1 = self.dpgrnn1(feat) # (B,16,T,25)
-        feat2 = self.dpgrnn2(feat1) # (B,16,T,25)
-        m_feat, de_s = self.decoder(feat2, en_outs)
-        m_feat = self.m_lsigmoid(m_feat.permute(0,3,2,1)).permute(0,3,2,1)
+            feat, en_outs = self.encoder(feat)
+            
+            feat1 = self.dpgrnn1(feat) # (B,16,T,25)
+            feat2 = self.dpgrnn2(feat1) # (B,16,T,25)
+            m_feat, de_s = self.decoder(feat2, en_outs)
 
-        m = self.erb.bs(m_feat)
-        spec_enh = self.mask(m, spec) # (B,2,T,F)
+            m = self.erb2.bs(m_feat) * pm  # (B,2,T,F)
+            spec_enh = self.mask(m, spec.permute(0,3,1,2)) # (B,2,T,F)
+
         spec_enh = spec_enh.permute(0,2,3,1)  # (B,T,F,2)
         spec_enh = spec_enh.unsqueeze(1) # B, C, T, F, 2
         m_output = self.stft.inverse_cpx(spec_enh)
         m_output = m_output.squeeze(-1)
         m_output = torch.nn.functional.pad(m_output, (0, n_samples-m_output.shape[1]))
 
-        return m_output, feat2, en_outs, de_s, spec
+        return m_output
 
-class noise_estimator(nn.Module):
-    def __init__(
-        self,
-        stft_inst,
-        n_fft=256,
-        hop_len=48,
-        win_len=192
-    ):
-        super().__init__()
-        self.n_fft = n_fft
-        self.hop_len = hop_len
-        self.win_len = win_len
-        
-        self.erb = ERB(21, 20, nfft=n_fft, high_lim=12000, fs=24000)
-        self.noi_decoder = Decoder()
-        self.mask = Mask()
-        self.num_features = 41
-        self.n_lsigmoid = LearnableTanh2d(self.num_features, beta=1)
-
-        self.stft = stft_inst
-
-    def forward(self, x, en_o, de_s, spec, n_samples):
-        """
-        x: (B, L)
-        """
-        
-        n_feat, _ = self.noi_decoder(x, en_o, de_s)
-        n_feat = self.n_lsigmoid(n_feat.permute(0,3,2,1)).permute(0,3,2,1)
-        n = self.erb.bs(n_feat)
-        nois_enh = self.mask(spec, n)
-        
-        nois_enh = nois_enh.permute(0,2,3,1)  # (B,T,F,2)
-        nois_enh = nois_enh.unsqueeze(1) # B, C, T, F, 2
-        n_output = self.stft.inverse_cpx(nois_enh)
-        n_output = n_output.squeeze(-1)
-        n_output = torch.nn.functional.pad(n_output, (0, n_samples-n_output.shape[1]))
-        
-        return n_output
-
-class dual_module(nn.Module):
-    def __init__(
-        self,
-        n_fft=256,
-        hop_len=48,
-        win_len=192
-        ):
-        super().__init__()
-        self.gtcrn = GTCRN(
-            n_fft=n_fft,
-            hop_len=hop_len,
-            win_len=win_len
-            )
-        self.noise_estimator = noise_estimator(
-            stft_inst=self.gtcrn.stft,
-            n_fft=n_fft,
-            hop_len=hop_len,
-            win_len=win_len
-            )
-
-    def forward(self, x):
-        enhanced, feat2, en_outs, de_s, spec = self.gtcrn(x)
-        noise = self.noise_estimator(feat2, en_outs, de_s, spec, x.shape[1])
-        return enhanced, noise
+# 顶层便捷函数，Trainer 可直接调用
+def load_preh_into_gtcrn(gtcrn_model, ckpt_path, map_location=None, strict=False, prefix="preh."):
+    """
+    Trainer 可调用的便捷函数：将 checkpoint 中的 PreEnhNet 参数载入给定的 gtcrn_model。
+    """
+    if not isinstance(gtcrn_model, GTCRN):
+        raise ValueError("gtcrn_model 必须是 GTCRN 实例")
+    return gtcrn_model.load_preh_from_checkpoint(ckpt_path, map_location=map_location, strict=strict, prefix=prefix)
 
 if __name__ == "__main__":
-    model = dual_module().eval()
+    model = GTCRN(all_stage=True).eval()
 
     """complexity count"""
     from ptflops import get_model_complexity_info

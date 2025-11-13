@@ -1,7 +1,8 @@
 network_config:
-  n_fft: 256
-  hop_len: 48
-  win_len: 192
+  n_fft: ${FFT.n_fft}
+  hop_len: ${FFT.hop_length}
+  win_len: ${FFT.win_length}
+  all_stage: True
 
 DDP:
   world_size: 2
@@ -10,29 +11,32 @@ optimizer:
   lr: 0.001
 
 scheduler:
+  name: ReduceLROnPlateau
   kwargs:
-    warmup_steps: 25000
-    decay_until_step: 250000
-    max_lr: 1e-3
-    min_lr: 1e-7
-
-  update_interval: step  # [step, epoch]
+    mode: min           # 如果监测的是 loss 用 min，分数用 max
+    factor: 0.5         # 学习率降低倍数
+    patience: 2         # 连续多少个 epoch 没提升就降低
+    verbose: true
+    min_lr: 1e-6        # 最小学习率
+    threshold: 1e-4     # 提升的最小幅度
+    cooldown: 0         # 冷却期
+    eps: 1e-8
+  use_plateau: true
+  update_interval: epoch
 
 FFT:
-  n_fft: 512
-  hop_length: 256
-  win_length: 512
+  n_fft: 256
+  hop_length: 48
+  win_length: 256
 
 loss:
-  fft_sizes: [512, 256, 128]
-  hop_sizes: [192, 96, 48]
-  win_lengths: [512, 256, 128]
+  n_fft: ${FFT.n_fft}
+  hop_len: ${FFT.hop_length}
+  win_len: ${FFT.win_length}
   compress_factor: 0.3
   eps: 1e-12
   lamda_ri: 30
   lamda_mag: 70
-  lambda_Mr: 1.0
-  lambda_Hyb: 1.0
 
 train_dataset: 
   clean_file_path: 'prepare_datasets/train_clean_24k.csv'
@@ -80,13 +84,15 @@ validation_dataloader:
 samplerate: 24000
 
 trainer:
-  epochs: 500
+  epochs: 200
   save_checkpoint_interval: 1
   clip_grad_norm_value: 3.0
-  exp_path: /data/goodman/torch_nn_train/SEtrain/Ha_denoise/gtcrn_dual_decoder_stepUpdate_16ch
+  exp_path: /data/goodman/torch_nn_train/SEtrain/Ha_denoise/gtcrn_2stage_35M_joint_train
   resume: False
   resume_datetime: 2024-12-31-14h28m
 
 lmdb_datasets:
   train_lmdb_path: prepare_datasets/training_audio_24k_noDereverb.lmdb
   valid_lmdb_path: prepare_datasets/validation_audio_24k_noDereverb.lmdb
+
+stage1_model_name: model_200

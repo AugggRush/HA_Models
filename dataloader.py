@@ -1,6 +1,5 @@
 import os
 import torch
-import h5py
 import lmdb
 import zlib
 import random
@@ -9,13 +8,12 @@ import time
 import logging
 import numpy as np
 import pandas as pd
-import soundfile as sf
-from torch.utils import data
-from typing import Tuple, Optional, Dict, Any
 from multiprocessing import Pool, cpu_count
 import torch.utils
 import torch.utils.data
+import pytorch_lightning as pl
 from tqdm import tqdm
+
 # 配置日志
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 logger = logging.getLogger(__name__)
@@ -330,556 +328,6 @@ class HaSimuDataset(torch.utils.data.Dataset):
         }                
         return sample_data
 
-class HaSimuDataset_HD5(torch.utils.data.Dataset):
-    """
-    用于加载HDF5音频数据的PyTorch Dataset类
-    支持从HDF5文件中读取音频波形数据或频谱特征
-    """
-
-    def __init__(
-                self, 
-                clean_file_path: str,
-                noise_file_path: str,
-                rir_file_path: str,
-                fs=24000,
-                length_in_seconds=8,
-                num_data_per_epoch=400000,
-                train=True,
-                snr_db=0.0,               # 新增：目标信噪比（dB）或范围，如 (min,max)
-                dr_db=(-40, -10),      # 新增：强制动态范围 (RMS dBFS) 在此范围内
-                random_seed=1234,
-                max_readers=126):
-        """
-        初始化HDF5音频数据集
-        
-        参数:
-            h5_file_path: HDF5文件路径
-        """
-        super(HaSimuDataset_HD5, self).__init__()
-
-        # --- 初始化随机种子，保证调试可重复 ---
-        try:
-            seed = int(random_seed)
-        except Exception:
-            seed = 1234
-        os.environ['PYTHONHASHSEED'] = str(seed)
-        random.seed(seed)            # Python random
-        np.random.seed(seed)         # numpy
-        torch.manual_seed(seed)      # torch CPU
-        try:
-            torch.cuda.manual_seed_all(seed)  # torch GPU（若可用）
-        except Exception:
-            pass
-        # 可选：使部分操作确定性（可能影响性能）
-        try:
-            torch.backends.cudnn.deterministic = True
-            torch.backends.cudnn.benchmark = False
-        except Exception:
-            pass
-        self.target_rir_length = int(0.5 * fs)
-        self.num_data_per_epoch = num_data_per_epoch
-        self.train = train
-        # 支持传入单值或(min, max)范围
-        if isinstance(snr_db, (list, tuple)) and len(snr_db) == 2:
-            self.snr_db_min = float(snr_db[0])
-            self.snr_db_max = float(snr_db[1])
-        else:
-            self.snr_db_min = float(snr_db)
-            self.snr_db_max = float(snr_db)
-        if isinstance(dr_db, (list, tuple)) and len(dr_db) == 2:
-            self.dr_db_min = float(dr_db[0])
-            self.dr_db_max = float(dr_db[1])
-        else:
-            self.dr_db_min = float(dr_db)
-            self.dr_db_max = float(dr_db)  
-        self.clean_h5_file_path = clean_file_path
-        self.noise_h5_file_path = noise_file_path
-        self.rir_h5_file_path = rir_file_path
-        print("You are using this dataset:", clean_file_path,"\t", noise_file_path,"\t", rir_file_path)            
-        # 打开HDF5文件并读取 干净语音数据
-        with h5py.File(clean_file_path, 'r') as h5f:
-            # 获取音频数据集
-            if "audio_data" not in h5f:
-                raise KeyError(f"Audio key 'audio_data' not found in HDF5 file")
-            h5_datas = h5f['audio_data']
-            # 获取数据集基本信息
-            self.clean_num_samples = h5_datas.attrs['num_files'] # 总样本数量     
-            self.clean_audio_duration = h5_datas.attrs['duration'] # 每个音频段的持续时间（秒）
-            self.clean_sampling_rate = h5_datas.attrs['sampling_rate']  # 采样率
-            self.clean_dtype = h5_datas.attrs['dtype'] # 数据类型
-            self.clean_num_channels = h5_datas.attrs['num_channels'] # 通道数
-        # 打开HDF5文件并读取 噪声数据
-        with h5py.File(noise_file_path, 'r') as h5f:
-            # 获取音频数据集
-            if "audio_data" not in h5f:
-                raise KeyError(f"Audio key 'audio_data' not found in HDF5 file")
-            h5_datas = h5f['audio_data']
-            # 获取数据集基本信息
-            self.noise_num_samples = h5_datas.attrs['num_files'] # 总样本数量    
-            self.noise_audio_duration = h5_datas.attrs['duration'] # 每个音频段的持续时间（秒）
-            self.noise_sampling_rate = h5_datas.attrs['sampling_rate']  # 采样率
-            self.noisen_dtype = h5_datas.attrs['dtype'] # 数据类型
-            self.noise_num_channels = h5_datas.attrs['num_channels'] # 通道数
-        # 打开HDF5文件并读取 冲击响应数据
-        with h5py.File(rir_file_path, 'r') as h5f:
-            # 获取音频数据集
-            if "audio_data" not in h5f:
-                raise KeyError(f"Audio key 'audio_data' not found in HDF5 file")
-            h5_datas = h5f['audio_data']
-            # 获取数据集基本信息
-            self.rir_num_samples = h5_datas.attrs['num_files'] # 总样本数量    
-            self.rir_audio_duration = h5_datas.attrs['duration'] # 每个音频段的持续时间（秒）
-            self.rir_sampling_rate = h5_datas.attrs['sampling_rate']  # 采样率
-            self.rir_dtype = h5_datas.attrs['dtype'] # 数据类型
-            self.rir_num_channels = h5_datas.attrs['num_channels'] # 通道数
-        # 检查采样率是否一致
-        if not (self.clean_sampling_rate == self.noise_sampling_rate == self.rir_sampling_rate == fs):
-            raise ValueError("Sampling rates of clean, noise, and RIR data must match the specified fs")
-        # 检查音频持续时间是否一致
-        if not (self.clean_audio_duration == self.noise_audio_duration == length_in_seconds):
-            raise ValueError("Audio durations of clean and noise data must match the specified length_in_seconds")
-        self.length_in_seconds = length_in_seconds
-        self.L = int(length_in_seconds * fs)
-
-
-    def __len__(self) -> int:
-        """返回数据集中的样本数量"""
-        if self.clean_num_samples < self.num_data_per_epoch:
-            return self.clean_num_samples
-        else: return self.num_data_per_epoch
-    
-    def __getitem__(self, idx: int) -> Tuple[torch.Tensor, Optional[torch.Tensor]]:
-        """
-        根据索引获取音频样本和标签
-        
-        参数:
-            idx: 样本索引
-            
-        返回:
-            audio_tensor: 音频张量 [channels, length] 或特征张量
-            label_tensor: 标签张量（如果有标签）
-        """
-        # 从HDF5文件中读取音频数据
-        with h5py.File(self.clean_h5_file_path, 'r') as h5f:
-            audio_data = h5f['audio_data'][idx]
-        # 从HDF5文件中随机选择一个噪声和RIR样本
-        with h5py.File(self.noise_h5_file_path, 'r') as h5f:
-            noise_data = h5f['audio_data'][random.randint(0, self.noise_num_samples - 1)]
-        with h5py.File(self.rir_h5_file_path, 'r') as h5f:
-            rir_data = h5f['audio_data'][random.randint(0, self.rir_num_samples - 1)]
-        
-        # 转换为PyTorch张量       
-        audio_tensor = torch.from_numpy(audio_data.astype(np.float32))
-        noise_tensor = torch.from_numpy(noise_data.astype(np.float32))
-        rir_tensor = torch.from_numpy(rir_data.astype(np.float32))
-        if self.rir_num_channels > 1:
-            rir_tensor = rir_tensor[:,0]  # 仅使用第一个通道
-
-        def _torch_convolve(signal, kernel, mode='full'):
-            """
-            使用 PyTorch 的 conv1d 函数模拟 NumPy 的 convolve 行为。
-
-            Args:
-                signal: 输入信号，一维 PyTorch 张量。
-                kernel: 卷积核，一维 PyTorch 张量。
-                mode: 卷积模式，'full', 'same', 或 'valid' [2](@ref)。
-
-            Returns:
-                一维张量，卷积结果。
-            """
-            # 确保输入是一维的
-            signal = signal.view(1, 1, -1)  # 形状变为 (batch_size=1, in_channels=1, length)
-            kernel = kernel.flip(dims=[0])  # 翻转卷积核以匹配np.convolve的互相关操作 [5](@ref)
-            kernel = kernel.view(1, 1, -1)  # 权重形状: (out_channels=1, in_channels/groups=1, kernel_size) [9,10](@ref)
-
-            # 根据模式设置填充 [6](@ref)
-            signal_length = signal.shape[-1]
-            kernel_length = kernel.shape[-1]
-            
-            if mode == 'full':
-                padding = kernel_length - 1
-            elif mode == 'same':
-                padding = (kernel_length - 1) // 2
-            elif mode == 'valid':
-                padding = 0
-            else:
-                raise ValueError("模式必须是 'full', 'same', 或 'valid'")
-
-            # 使用卷积操作，分组数设为1 [9](@ref)
-            result = torch.nn.functional.conv1d(signal, kernel, padding=padding, groups=1)
-            return result.squeeze()  # 将输出恢复为一维
-
-        conv = _torch_convolve(audio_tensor, rir_tensor)[:self.L]
-        # 前五十毫秒的 RIR作为target
-        rir_trim = rir_tensor[:self.target_rir_length]  # 裁剪或补零到目标长度       
-        # 卷积并取前 self.L
-        conv_trim = _torch_convolve(audio_tensor, rir_trim)[:self.L]               
-
-        # 调整噪声幅度以匹配目标 SNR（dB），每次从范围内随机采样一个 SNR
-        def _rms(x, dim=None, keepdim=False):
-            """
-            PyTorch版本的RMS计算函数
-            
-            参数:
-                x: 输入张量
-                dim: 沿指定维度计算RMS（默认为全局计算）
-                keepdim: 是否保持维度
-            """
-            if x.numel() == 0:
-                return torch.tensor(0.0, device=x.device)
-            
-            # 计算平方值的均值，然后开方[1](@ref)
-            squared = x ** 2
-            if dim is not None:
-                mean_squared = torch.mean(squared, dim=dim, keepdim=keepdim)
-            else:
-                mean_squared = torch.mean(squared)
-            
-            return torch.sqrt(mean_squared)
-
-        rms_cov = _rms(conv)
-        rms_noise = _rms(noise_tensor)
-        if rms_noise == 0 or rms_cov == 0:
-            noisy = conv + noise_tensor
-        else:
-            # 随机采样一个 SNR（dB）
-            snr_db = int(random.uniform(self.snr_db_min, self.snr_db_max))
-            # 要使 SNR = 20*log10(rms_clean / rms_noise_scaled)
-            # 则 rms_noise_scaled = rms_clean / (10^(SNR/20))
-            target_linear = 10.0 ** (-snr_db / 20.0)
-            scale = (rms_cov / rms_noise) * target_linear
-            noise_scaled = noise_tensor * scale
-            noisy = conv + noise_scaled
-
-        # 防止 NaN / inf
-        noisy = torch.nan_to_num(noisy).to(torch.float32)
-        clean_out = torch.nan_to_num(conv_trim).to(torch.float32)
-
-        # --- 新增：强制 noisy 的动态范围 (RMS dBFS) 在 [-40, -5] 之间 ---
-        # 计算 RMS 与 dB
-        # 计算噪声音频的RMS并转换为分贝
-        eps = 1e-10
-        rms_noisy = _rms(noisy)
-        db_noisy = 20.0 * torch.log10(torch.max(rms_noisy, torch.tensor(eps, device=noisy.device)))
-        # 使用torch.clamp进行裁剪（等效于np.clip）
-        db_target = int(random.uniform(-40, -10))  # 每次随机选择一个目标范围上限
-        # 若需要调整则缩放音频
-        if torch.abs(db_target - db_noisy) > 1e-6:
-            scale = 10.0 ** ((db_target - db_noisy) / 20.0)
-            noisy = noisy * scale
-            clean_out = clean_out * scale
-        # 防止峰值溢出，进行峰值归一化
-        if noisy.numel() > 0:
-            peak = torch.max(torch.abs(noisy))
-            if peak > 1.0:
-                noisy = noisy / peak
-                clean_out = clean_out / peak
-        
-        return noisy, clean_out
-    
-    def get_dataset_info(self) -> Dict[str, Any]:
-        """返回数据集的详细信息"""
-        info_dict = {
-            'snrrange in dB': (self.snr_db_min, self.snr_db_max),
-            'dynamic range in dB range': (self.dr_db_min, self.dr_db_max),
-            'sampling rate': self.clean_sampling_rate,
-            'audio segment length in s': self.length_in_seconds,
-            'target rir reserve in s': int(self.target_rir_length / self.clean_sampling_rate),
-            'num audio file (8s) per epoch': self.num_data_per_epoch,
-            'is training now': self.train
-        }
-        print("Dataset info:\n", info_dict)
-        return info_dict
-
-
-class HaSimulate_LMDB(torch.utils.data.Dataset):
-    """
-    从LMDB数据库加载WAV音频数据的PyTorch Dataset类
-    优化了读取性能并包含完整的错误处理[1,6](@ref)
-    """
-    
-    def __init__(
-                self, 
-                clean_file_path: str,
-                noise_file_path: str,
-                rir_file_path: str,
-                fs=24000,
-                length_in_seconds=8,
-                num_data_per_epoch=400000,
-                train=True,
-                snr_db=0.0,               # 新增：目标信噪比（dB）或范围，如 (min,max)
-                dr_db=(-40, -10),      # 新增：强制动态范围 (RMS dBFS) 在此范围内
-                random_seed=1234,
-                max_readers=126):
-        """
-        初始化LMDB数据集
-        
-        参数:
-
-        """
-
-        # --- 初始化随机种子，保证调试可重复 ---
-        try:
-            seed = int(random_seed)
-        except Exception:
-            seed = 1234
-        os.environ['PYTHONHASHSEED'] = str(seed)
-        random.seed(seed)            # Python random
-        np.random.seed(seed)         # numpy
-        torch.manual_seed(seed)      # torch CPU
-        try:
-            torch.cuda.manual_seed_all(seed)  # torch GPU（若可用）
-        except Exception:
-            pass
-        # 可选：使部分操作确定性（可能影响性能）
-        try:
-            torch.backends.cudnn.deterministic = True
-            torch.backends.cudnn.benchmark = False
-        except Exception:
-            pass
-        self.fs = fs
-        self.target_rir_length = int(0.5 * fs)
-        self.num_data_per_epoch = num_data_per_epoch
-        self.train = train
-        # 支持传入单值或(min, max)范围
-        if isinstance(snr_db, (list, tuple)) and len(snr_db) == 2:
-            self.snr_db_min = float(snr_db[0])
-            self.snr_db_max = float(snr_db[1])
-        else:
-            self.snr_db_min = float(snr_db)
-            self.snr_db_max = float(snr_db)
-        if isinstance(dr_db, (list, tuple)) and len(dr_db) == 2:
-            self.dr_db_min = float(dr_db[0])
-            self.dr_db_max = float(dr_db[1])
-        else:
-            self.dr_db_min = float(dr_db)
-            self.dr_db_max = float(dr_db)  
-
-        self.clean_lmdb_path = clean_file_path
-        self.noise_lmdb_path = noise_file_path
-        self.rir_lmdb_path = rir_file_path
-
-        self.in_memory = False
-        self.max_readers = max_readers
-
-        # --- 移除原有的 self._init_db 调用 ---
-        # 我们不再在这里初始化 self.clean_env, self.clean_txn 等
-        # 改为读取全局元数据（如果需要的话，可以用一个临时环境）
-        # 注意：全局元数据通常很小，可以安全地读取并存储为普通数据类型
-        try:
-            # 临时打开一个环境来获取全局元数据
-            clean_env = lmdb.open(self.clean_lmdb_path, readonly=True, lock=False, max_readers=1)
-            self.clean_keys = []
-            with clean_env.begin(write=False) as temp_txn:
-                # 使用cursor遍历所有键，`iternext(keys=True, values=False)`只获取key
-                self.clean_keys = [key.decode('utf-8') for key in temp_txn.cursor().iternext(keys=True, values=False)]
-                global_meta_bytes = temp_txn.get(b'__global_metadata__')
-                if global_meta_bytes:
-                    self.clean_global_metadata = pickle.loads(global_meta_bytes)
-                else:
-                    raise ValueError("Global metadata not found in clean LMDB")
-            self.clean_length = len(self.clean_keys)
-            clean_env.close()
-            noise_env = lmdb.open(self.noise_lmdb_path, readonly=True, lock=False, max_readers=1)
-            with noise_env.begin(write=False) as temp_txn:
-                # 使用cursor遍历所有键，`iternext(keys=True, values=False)`只获取key
-                self.noise_keys = [key.decode('utf-8') for key in temp_txn.cursor().iternext(keys=True, values=False)]                
-                global_meta_bytes = temp_txn.get(b'__global_metadata__')
-                if global_meta_bytes:
-                    self.noise_global_metadata = pickle.loads(global_meta_bytes)
-                else:
-                    raise ValueError("Global metadata not found in clean LMDB")
-            self.noise_length = len(self.noise_keys)
-            noise_env.close()
-            rir_env = lmdb.open(self.rir_lmdb_path, readonly=True, lock=False, max_readers=1)
-            with rir_env.begin(write=False) as temp_txn:
-                # 使用cursor遍历所有键，`iternext(keys=True, values=False)`只获取key
-                self.rir_keys = [key.decode('utf-8') for key in temp_txn.cursor().iternext(keys=True, values=False)]                
-                global_meta_bytes = temp_txn.get(b'__global_metadata__')
-                if global_meta_bytes:
-                    self.rir_global_metadata = pickle.loads(global_meta_bytes)
-                else:
-                    raise ValueError("Global metadata not found in clean LMDB")
-            self.rir_length = len(self.rir_keys)     
-            rir_env.close() 
-        except Exception as e:
-            logger.error(f"Error reading global metadata: {e}")
-            raise
-
-        if not (self.clean_global_metadata['sampling_rate'] == \
-                self.noise_global_metadata['sampling_rate'] == \
-                self.rir_global_metadata['sampling_rate'] == fs):
-            raise ValueError("Sampling rates of clean, noise, and RIR data must match the specified fs")
-        if not (self.clean_global_metadata['duration'] == \
-                self.noise_global_metadata['duration'] == length_in_seconds):
-            raise ValueError("Audio durations of clean and noise data must match the specified length_in_seconds")
-        
-        self.length_in_seconds = length_in_seconds
-        self.L = int(length_in_seconds * fs)
-
-    def __len__(self) -> int:
-        """返回数据集中的样本数量"""
-        # 假设 clean_global_metadata 里包含了总样本数 'num_files'
-        total_files = self.clean_length
-        if total_files < self.num_data_per_epoch:
-            return total_files
-        else:
-            return self.num_data_per_epoch
-
-    def __getitem__(self, index: int) -> Dict[str, Any]:
-        """
-        根据索引获取数据样本
-        
-        参数:
-            index: 样本索引
-            
-        返回:
-            包含音频数据和元数据的字典
-        """
-        if index >= self.clean_length:
-            raise IndexError(f"Index {index} out of range for dataset of size {self.clean_length}")
-        
-        try:
-            self.clean_env = lmdb.open(self.clean_lmdb_path, readonly=True, lock=False, max_readers=self.max_readers)
-            self.noise_env = lmdb.open(self.noise_lmdb_path, readonly=True, lock=False, max_readers=self.max_readers)
-            self.rir_env = lmdb.open(self.rir_lmdb_path, readonly=True, lock=False, max_readers=self.max_readers)
-            # 构建键（8位数字格式）
-            with self.clean_env.begin(write=False) as clean_txn, \
-                 self.noise_env.begin(write=False) as noise_txn, \
-                 self.rir_env.begin(write=False) as rir_txn:
-                key = self.clean_keys[index].encode()  # 使用预存的键列表
-                # 从LMDB读取语音数据
-                value_bytes = clean_txn.get(key)
-                if value_bytes is None:
-                    raise KeyError(f"Key {key} not found in LMDB database")
-                # 反序列化数据
-                data_dict = pickle.loads(value_bytes) 
-                # 提取音频数据和元数据
-                clean_data = data_dict['audio_data']
-
-                # 构建键（8位数字格式）
-                n_idx = random.randint(0, self.noise_length - 1)
-                key = self.noise_keys[n_idx].encode()  # 使用预存的键列表
-                # 从LMDB读取噪声数据
-                noise_value_bytes = noise_txn.get(key)
-                if noise_value_bytes is None:
-                    raise KeyError(f"Key {key} not found in noise LMDB database")
-                noise_dict = pickle.loads(noise_value_bytes)
-                noise_data = noise_dict['audio_data']
-                
-                # 构建键（8位数字格式）
-                r_idx = random.randint(0, self.rir_length - 1)
-                key = self.rir_keys[r_idx].encode()  # 使用预存的键列表
-                # 从LMDB读取RIR数据
-                rir_value_bytes = rir_txn.get(key)
-                if rir_value_bytes is None:
-                    raise KeyError(f"Key {key} not found in RIR LMDB database")
-                rir_dict = pickle.loads(rir_value_bytes)
-                rir_data = rir_dict['audio_data']   
-            
-            if self.rir_global_metadata['num_channels'] > 1:
-                rir_data = rir_data[:,1]  # 仅使用第一个通道
-
-            clean_conv = np.convolve(clean_data, rir_data)[:self.L]
-            # 前五十毫秒的 RIR作为target
-            rir_trim = rir_data[:self.target_rir_length]  # 裁剪或补零到目标长度       
-            # 卷积并取前 self.L
-            conv_trim = np.convolve(clean_data, rir_trim)[:self.L]   
-
-            # 调整噪声幅度以匹配目标 SNR（dB），每次从范围内随机采样一个 SNR
-            def _rms(x, dim=None, keepdim=False):
-                """
-                PyTorch版本的RMS计算函数
-                
-                参数:
-                    x: 输入张量
-                    dim: 沿指定维度计算RMS（默认为全局计算）
-                    keepdim: 是否保持维度
-                """
-                if x.size == 0:
-                    return np.zeros(x.size, dtype=np.float32)
-                
-                # 计算平方值的均值，然后开方[1](@ref)
-                squared = x ** 2
-                if dim is not None:
-                    mean_squared = np.mean(squared, dim=dim, keepdim=keepdim)
-                else:
-                    mean_squared = np.mean(squared)
-                
-                return np.sqrt(mean_squared)
-
-            rms_cov = _rms(clean_conv)
-            rms_noise = _rms(noise_data)
-            if rms_noise == 0 or rms_cov == 0:
-                noisy = clean_conv + noise_data
-            else:
-                # 随机采样一个 SNR（dB）
-                snr_db = int(random.uniform(self.snr_db_min, self.snr_db_max))
-                # 要使 SNR = 20*log10(rms_clean / rms_noise_scaled)
-                # 则 rms_noise_scaled = rms_clean / (10^(SNR/20))
-                target_linear = 10.0 ** (-snr_db / 20.0)
-                scale = (rms_cov / rms_noise) * target_linear
-                noise_scaled = noise_data * scale
-                noisy = clean_conv + noise_scaled
-
-            # 防止 NaN / inf
-            noisy = np.nan_to_num(noisy)
-            clean_out = np.nan_to_num(conv_trim)
-
-            # --- 新增：强制 noisy 的动态范围 (RMS dBFS) 在 [-40, -5] 之间 ---
-            # 计算 RMS 与 dB
-            # 计算噪声音频的RMS并转换为分贝
-            eps = 1e-10
-            rms_noisy = _rms(noisy)
-            db_noisy = 20.0 * np.log10(np.maximum(rms_noisy, eps))
-            # 使用torch.clamp进行裁剪（等效于np.clip）
-            db_target = int(random.uniform(self.dr_db_min, self.dr_db_max))  # 每次随机选择一个目标范围上限
-            # 若需要调整则缩放音频
-            if np.abs(db_target - db_noisy) > 1e-6:
-                scale = 10.0 ** ((db_target - db_noisy) / 20.0)
-                noisy = noisy * scale
-                clean_out = clean_out * scale
-            # 防止峰值溢出，进行峰值归一化
-            if noisy.size != 0:
-                peak = np.max(np.abs(noisy))
-                if peak > 1.0:
-                    noisy = noisy / peak
-                    clean_out = clean_out / peak
-
-        # 包含音频数据和元数据的字典    
-        except Exception as e:
-            logger.error(f"Error loading sample {index}: {e}")
-            # 返回空样本或进行错误处理
-            return self._get_empty_sample(index)
-        return torch.from_numpy(noisy).to(torch.float), torch.from_numpy(clean_out).to(torch.float)
-    
-
-    def _get_empty_sample(self, index: int) -> Dict[str, Any]:
-        """返回空样本用于错误处理"""
-        empty_audio = torch.zeros(self.clean_length, dtype=torch.float)
-        return empty_audio, empty_audio
-    
-    def get_global_metadata(self) -> Dict[str, Any]:
-        """获取全局元数据"""
-        return self.clean_global_metadata.copy() if self.clean_global_metadata else {}
-    
-    def __del__(self):
-        """清理资源"""
-        if hasattr(self, 'env') and self.env:
-            self.env.close()
-    
-    def close(self):
-        """显式关闭数据库连接"""
-        if self.clean_env is not None:
-            self.clean_env.close()
-            self.clean_env = None
-        if self.noise_env is not None:
-            self.noise_env.close()
-            self.noise_env = None
-        if self.rir_env is not None:
-            self.rir_env.close()
-            self.rir_env = None
-
 class HaSimuDatasetToLMDB:
     def __init__(self, original_dataset, lmdb_path, num_workers=None):
         """
@@ -1098,11 +546,7 @@ class HaDataSetsFromLMDB(torch.utils.data.Dataset):
             noisy = torch.from_numpy(sample_data['noisy'].copy())  # 使用copy()确保数据独立性
             clean = torch.from_numpy(sample_data['clean'].copy())
             snr = sample_data.get('snr', None)
-            
-            # 实时检查数据质量
-            # if torch.max(torch.abs(noisy)) < 1e-5 or torch.max(torch.abs(clean)) < 1e-5:
-            #     print(f"警告: 样本 {idx} [d峰值过低: noisy={torch.max(torch.abs(noisy)):.2e}, clean={torch.max(torch.abs(clean)):.2e}")
-            
+                  
         return noisy, clean, snr
 
     def make_wavs_noisy(self, idx, snr):
@@ -1123,13 +567,34 @@ class HaDataSetsFromLMDB(torch.utils.data.Dataset):
         }                
         return sample_data
 
-def lmdb_worker_init_fn(worker_id):
-    """DataLoader工作进程初始化函数"""
-    # 确保每个工作进程有独立的随机种子
-    worker_info = torch.utils.data.get_worker_info()
-    if worker_info is not None:
-        torch.manual_seed(worker_info.seed % (2**32 - 1))
+class PlDataModule(pl.LightningDataModule):
+    def __init__(
+        self, 
+        train_src_dir,
+        val_src_dir,
+        batch_size, 
+        num_workers,
+        max_reader=512,
+    ):
+        super().__init__()
+        self.train_src_dir = train_src_dir
+        self.val_src_dir = val_src_dir
 
+        self.batch_size = batch_size
+        self.num_workers = num_workers
+        self.max_reader = max_reader
+
+    def setup(self, stage=None):
+        if stage == 'fit' or stage is None:
+            self.train_dataset = HaDataSetsFromLMDB(self.train_src_dir, self.max_reader)
+            self.val_dataset = HaDataSetsFromLMDB(self.val_src_dir, self.max_reader)
+
+    def train_dataloader(self):
+        return torch.utils.data.DataLoader(self.train_dataset, batch_size=self.batch_size, shuffle=True, num_workers=self.num_workers)
+
+    def val_dataloader(self):
+        return torch.utils.data.DataLoader(self.val_dataset, batch_size=1, shuffle=False, num_workers=self.num_workers)
+    
 if __name__=='__main__':
     # pass
     from omegaconf import OmegaConf

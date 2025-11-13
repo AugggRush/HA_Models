@@ -17,10 +17,10 @@ import torch.distributed as dist
 from torch.utils.tensorboard import SummaryWriter
 from distributed_utils import reduce_value
 
-# from models.gtcrn_end2end import GTCRN as gtcrn
+from models.gtcrn_end2end import GTCRN as gtcrn
 # from models.gtcrn_end2end import dual_module as dual_model
-from models.deepfilternet3 import DfNet
-from loss_factory import DfLoss as Loss
+# from models.deepfilternet3 import DfNet
+from loss_factory import HybridLoss as Loss
 from dataloader import HaDataSetsFromLMDB as Dataset
 from scheduler import LinearWarmupCosineAnnealingLR as WarmupLR
 
@@ -67,16 +67,20 @@ def run(rank, config, args):
                                                         shuffle=False,
                                                         collate_fn=collate_fn)
         
-    model = DfNet(config['network_config']).to(args.device)
-
+    model = gtcrn(**config['network_config']).to(args.device)
+    if config['network_config'].get('all_stage', False):
+        print("Training all stages jointly.")
+        pre_ckp = (os.path.join(config['trainer']['exp_path'], 'checkpoints', config['stage1_model_name'] + '.tar'))       
+        model.load_preh_from_checkpoint(pre_ckp, args.device)
+    
     if args.world_size > 1:
         model = torch.nn.parallel.DistributedDataParallel(model, device_ids=[rank])
 
     optimizer = torch.optim.Adam(params=model.parameters(), **config['optimizer'])
     # scheduler = torch.optim.lr_scheduler.MultiStepLR(optimizer, **config['scheduler']['kwargs'])
     # scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(optimizer, **config['scheduler']['kwargs'])
-    # scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(optimizer, **config['scheduler']['kwargs'])
-    scheduler = WarmupLR(optimizer, **config['scheduler']['kwargs'])
+    scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(optimizer, **config['scheduler']['kwargs'])
+    # scheduler = WarmupLR(optimizer, **config['scheduler']['kwargs'])
     
     loss_func = Loss(**config['loss']).to(args.device)
 
@@ -192,9 +196,9 @@ class Trainer:
             noisy = noisy.to(self.device)
             clean = clean.to(self.device)
 
-            enhanced, _, _, _, _ = self.model(noisy)
+            enhanced = self.model(noisy)
                 
-            loss, _, _ = self.loss_func(enhanced, clean)
+            loss = self.loss_func(enhanced, clean)
             if self.world_size > 1:
                 loss = reduce_value(loss)
             total_loss += loss
@@ -275,9 +279,9 @@ class Trainer:
         for step, (noisy, clean, snr) in enumerate(self.validation_bar, 1):
             noisy = noisy.to(self.device)
             clean = clean.to(self.device)  
-            enhanced, _, _, _, _ = self.model(noisy)
+            enhanced = self.model(noisy)
 
-            loss, _, _ = self.loss_func(enhanced, clean)
+            loss = self.loss_func(enhanced, clean)
             if self.world_size > 1:
                 loss = reduce_value(loss)
             total_loss += loss.item()

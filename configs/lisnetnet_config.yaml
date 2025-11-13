@@ -1,0 +1,46 @@
+# gpu config
+accelerator: gpu
+devices: [0,1,2,3]
+
+# log config
+log_dir: ./Ha_denoise/LisenNet_logs
+resume: null  # if want to resume, specify ckpt path
+
+# dataset config
+dataset_config:
+  batch_size: 32
+  num_workers: 16  # dataloader workers
+  train_src_dir: prepare_datasets/training_audio_24k_noDereverb.lmdb
+  val_src_dir: prepare_datasets/validation_audio_24k_noDereverb.lmdb
+
+
+# training config
+max_epochs: 200
+val_check_interval: 1  # validate every 0.5 epochs
+gradient_clip_val: 5.0
+g_opt:
+  lr: 5.0e-4
+  betas: [0.8, 0.99]
+d_opt:
+  lr: 5.0e-4
+  betas: [0.8, 0.99]
+g_sch:
+  step_size: 1
+  gamma: 0.98
+  verbose: true
+d_sch:
+  step_size: 1
+  gamma: 0.98
+  verbose: true
+
+# model config and loss weights
+model_config:
+  num_channels: 8
+  n_blocks: 2
+  n_fft: 256
+  hop_length: 48
+  compress_factor: 0.3
+weights:
+  complex: 0.1
+  mag: 0.9
+  adv: 0.05
