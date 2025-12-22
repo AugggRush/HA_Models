@@ -1,7 +1,13 @@
 network_config:
-  n_fft: ${FFT.n_fft}
-  hop_len: ${FFT.hop_length}
-  win_len: ${FFT.win_length}
+  symmetry_win: False
+  NFFT: 256
+  window_len: 256
+  hop_size: 48
+  compression: "sqrt"
+  eband_num: 96
+  gru1_size: 96
+  gru2_size: 96
+  M: 32
 
 DDP:
   world_size: 2
@@ -11,17 +17,27 @@ optimizer:
 
 scheduler:
   kwargs:
-    warmup_steps: 50000
-    decay_until_step: 150000 #200000
+    warmup_steps: 10000
+    decay_until_step: 200000
     max_lr: 0.001
     min_lr: 1.0e-07
-    init_lr: 0.0001
   update_interval: step
-  
+  # name: ReduceLROnPlateau
+  # kwargs:
+  #   mode: min           # 如果监测的是 loss 用 min，分数用 max
+  #   factor: 0.5         # 学习率降低倍数
+  #   patience: 2         # 连续多少个 epoch 没提升就降低
+  #   min_lr: 1e-7        # 最小学习率
+  #   threshold: 1e-3     # 提升的最小幅度
+  #   cooldown: 0         # 冷却期
+  #   eps: 1e-8
+  # use_plateau: true
+  # update_interval: epoch
+
 FFT:
-  n_fft: 128
+  n_fft: 256
   hop_length: 48
-  win_length: 128
+  win_length: 256
 
 loss:
   n_fft: ${FFT.n_fft}
@@ -31,24 +47,6 @@ loss:
   eps: 1e-12
   lamda_ri: 30
   lamda_mag: 70
-  # sample_rate: ${samplerate}
-  # nfft: ${FFT.n_fft}
-  # hop_size: ${FFT.hop_length}
-  # K: 25
-  # phon: 40
-  # eps: 1e-12
-
-ccsdc_loss:
-  alpha: 0.3
-  beta: 0.3
-  fft_size: ${FFT.n_fft}
-  norm_flag: False
-  eps: 1e-12
-  loss_type: 'mse'
-  revise_clean: False
-  hop_size: ${FFT.hop_length}
-  percep_weight: 0.06
-  mix_noise: 0.0
 
 train_dataset: 
   clean_file_path: 'prepare_datasets/train_clean_24k.csv'
@@ -60,8 +58,8 @@ train_dataset:
   train: True
   snr_db: [0, 25]
   dr_db: [-35, -15]
-  pure_noise_prob: 0.05
-  random_seed: 1117
+  pure_noise_prob: 0.1
+  random_seed: 0511
   max_readers: 256
 
 train_dataloader: 
@@ -82,8 +80,8 @@ validation_dataset:
   train: False
   snr_db: [0, 25]
   dr_db: [-35, -15]
-  pure_noise_prob: 0.05
-  random_seed: 2025
+  pure_noise_prob: 0.1
+  random_seed: 2021
   max_readers: 256
 
 validation_dataloader:
@@ -96,15 +94,15 @@ validation_dataloader:
 samplerate: 24000
 
 trainer:
-  epochs: 100
+  epochs: 200
   save_checkpoint_interval: 1
   clip_grad_norm_value: 3.0
-  exp_path: /data/goodman/torch_nn_train/SEtrain/Ha_denoise/gtcrn_24M_Hyber_loss_train_128_clip1.0_realDecoder
+  exp_path: /data/goodman/torch_nn_train/SEtrain/Ha_denoise/base_69M_train
   resume: False
   resume_datetime: 2025-11-13-03h26m
 
 lmdb_datasets:
-  train_lmdb_path: ./prepare_datasets/training_audio_tau_24k_noDereverb.lmdb
-  valid_lmdb_path: ./prepare_datasets/validation_audio_tau_24k_noDereverb.lmdb
+  train_lmdb_path: prepare_datasets/training_audio_24k_noDereverb.lmdb
+  valid_lmdb_path: prepare_datasets/validation_audio_24k_noDereverb.lmdb
 
 stage1_model: 

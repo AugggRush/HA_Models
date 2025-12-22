@@ -10,7 +10,7 @@ import numpy as np
 import torch.nn as nn
 from einops import rearrange
 import putils.torch_asym_stft as torch_asym_stft
-from models.lisennet.generator.dpr_layer import DPR, CustomLayerNorm
+from models.lisennet.generator.dpr_layer import ConvolutionalGLU, CustomLayerNorm
 
 class ERB(nn.Module):
     def __init__(self, erb_subband_1, erb_subband_2, nfft=512, high_lim=8000, fs=16000):
@@ -82,14 +82,14 @@ class TRA(nn.Module):
     """Temporal Recurrent Attention"""
     def __init__(self, channels):
         super().__init__()
-        self.att_gru = nn.GRU(channels, channels*2, 1, batch_first=True)
+        self.att_gru = nn.Linear(channels, channels*2)
         self.att_fc = nn.Linear(channels*2, channels)
         self.att_act = nn.Sigmoid()
 
     def forward(self, x):
         """x: (B,C,T,F)"""
         zt = torch.mean(x.pow(2), dim=-1)  # (B,C,T)
-        at = self.att_gru(zt.transpose(1,2))[0]
+        at = self.att_gru(zt.transpose(1,2))
         at = self.att_fc(at).transpose(1,2)
         at = self.att_act(at)
         At = at[..., None]  # (B,C,T,1)
@@ -234,7 +234,7 @@ class Encoder(nn.Module):
     def __init__(self):
         super().__init__()
         self.en_convs = nn.ModuleList([
-            ConvBlock(3*3*2, 8, (1,5), stride=(1,2), padding=(0,2), groups=2, use_deconv=False, is_last=False),
+            ConvBlock(3*3, 8, (1,5), stride=(1,2), padding=(0,2), use_deconv=False, is_last=False),
             ConvBlock(8, 4, (1,5), stride=(1,2), padding=(0,2), groups=2, use_deconv=False, is_last=False),
             GTConvBlock(4, 2, (3,3), stride=(1,1), padding=(0,1), dilation=(1,1), use_deconv=False),
             GTConvBlock(4, 2, (3,3), stride=(1,1), padding=(0,1), dilation=(2,1), use_deconv=False),
@@ -374,11 +374,13 @@ class PreEnhNet(nn.Module):
             nn.PReLU(emb_dim),
         )
 
-        self.dpr = DPGRNN(emb_dim, n_freqs//4, hidden_dim, emb_dim)
+        self.dpr1 = DPGRNN(emb_dim, n_freqs//4, hidden_dim, emb_dim)
+        self.glu = ConvolutionalGLU(emb_dim, n_freqs=n_freqs//4, expansion_factor=2, dropout_p=dropout_p)
+        self.dpr2 = DPGRNN(emb_dim, n_freqs//4, hidden_dim, emb_dim)
         self.linear_block = nn.Sequential(
             nn.LayerNorm((emb_dim * (n_freqs//4))),
             nn.Linear((emb_dim * (n_freqs//4)), n_freqs),
-            nn.PReLU(),
+            # nn.PReLU(),
             nn.Dropout(dropout_p)
         )
         self.lsigmoid = LearnableSigmoid2d(n_freqs, beta=1)
@@ -389,7 +391,9 @@ class PreEnhNet(nn.Module):
         x = self.conv_2(x)
         x = self.conv_3(x)
         
-        x = self.dpr(x)
+        x = self.dpr1(x)
+        x = self.glu(x)
+        # x = self.dpr2(x)
         x = x.permute(0, 2, 3, 1).flatten(2).contiguous()  # (b,t,d*f)
 
         x = self.linear_block(x).unsqueeze(-1)  # (b,t,f,1)
@@ -401,44 +405,37 @@ class GTCRN(nn.Module):
         self,
         n_fft=256,
         hop_len=48,
-        win_len=192,
-        all_stage=False
+        win_len=256,
     ):
         super().__init__()
         self.n_fft = n_fft
         self.hop_len = hop_len
         self.win_len = win_len
-        
-        self.erb1 = ERB(5,19, nfft=n_fft, high_lim=12000, fs=24000)
-        self.erb1.requires_grad_(False)
 
         self.sfe = SFE(3, 1)
-        self.preh = PreEnhNet(
-            n_fft=n_fft,
-            hop_len=hop_len,
-            win_len=win_len,
-            in_channels=3,
-            emb_dim=8,
-            hidden_dim=8*2,
-            n_freqs=24,
-            dropout_p=0.1
-        )
-        self.all_stage = all_stage
-        if all_stage:
+        
+        self.erb2 = ERB(16, 17, nfft=n_fft, high_lim=12000, fs=24000)
+        self.erb2.requires_grad_(False)
+        self.encoder = Encoder()
+        
+        self.dpgrnn1 = DPGRNN(4, 9, 16, 4)
+        self.dpgrnn2 = DPGRNN(4, 9, 16, 4)
 
-            self.erb2 = ERB(21, 20, nfft=n_fft, high_lim=12000, fs=24000)
-            self.erb2.requires_grad_(False)
-            self.encoder = Encoder()
-            
-            self.dpgrnn1 = DPGRNN(4, 11, 8, 4)
-            self.dpgrnn2 = DPGRNN(4, 11, 8, 4)
-            
-            self.decoder = Decoder()
+        # self.glu = ConvolutionalGLU(4, n_freqs=11, expansion_factor=2, dropout_p=0.1)
+        
+        self.decoder = Decoder()
 
-            self.num_features1 = 24
-            self.num_features2 = 41
+        # self.num_features2 = 41
 
-            self.mask = Mask()
+        self.mask = Mask()
+
+        # self.linear_block = nn.Sequential(
+        #     nn.LayerNorm((4 * 11)),
+        #     nn.Linear((4 * 11), 41*2),
+        #     # nn.PReLU(),
+        #     nn.Dropout(0.1)
+        # )
+        # self.ltanh = LearnableTanh2d(41, beta=1)
 
         self.stft = torch_asym_stft.STFT_asym(
             filter_length=n_fft, hop_length=hop_len, 
@@ -468,35 +465,26 @@ class GTCRN(nn.Module):
         """
         map_location = map_location if map_location is not None else "cpu"
         ckpt = torch.load(ckpt_path, map_location=map_location)
-
         # 提取 state_dict
-        if isinstance(ckpt, dict) and "state_dict" in ckpt:
-            state_dict = ckpt["state_dict"]
+        if isinstance(ckpt, dict) and "model" in ckpt:
+            state_dict = ckpt["model"]
         elif isinstance(ckpt, dict) and all(isinstance(v, torch.Tensor) for v in ckpt.values()):
             state_dict = ckpt
         else:
-            # 其他情况直接当作 state_dict 处理
-            state_dict = ckpt
-
-        # 处理 DataParallel 的 module. 前缀
-        def _strip_module(key):
-            if key.startswith("module."):
-                return key[len("module."):]
-            return key
-
-        # 收集以 prefix 开头的键
-        preh_state = {}
-        for k, v in state_dict.items():
-            k_strip = _strip_module(k)
-            if k_strip.startswith(prefix):
-                new_k = k_strip[len(prefix):]  # 去掉 'preh.' 前缀后传给 self.preh
-                preh_state[new_k] = v
-
+            raise RuntimeError("未能识别 checkpoint 格式")
+        # 如果没有以 prefix 开头的参数，则尝试直接加载全部参数
+        preh_state = {k: v for k, v in state_dict.items() if k.startswith(prefix)}
         if len(preh_state) == 0:
-            print(f"[load_preh_from_checkpoint] 未在 checkpoint 中找到以 '{prefix}' 为前缀的参数，请确认 checkpoint 内容。")
-            return 0
+            # 尝试直接加载全部参数
+            try:
+                loaded = self.preh.load_state_dict(state_dict, strict=strict)
+                print(f"[load_preh_from_checkpoint] 直接加载全部参数，成功加载 {len(loaded.keys())} 个参数。")
+                return len(loaded.keys())
+            except Exception as e:
+                print(f"[load_preh_from_checkpoint] 加载失败: {e}")
+                return 0
 
-        # 加载到 self.preh
+            # 加载到 self.preh
         try:
             missing, unexpected = self.preh.load_state_dict(preh_state, strict=strict)
             # load_state_dict 返回 None 或 NamedTuple（PyTorch 2.x 会抛出异常或返回 None）
@@ -529,27 +517,28 @@ class GTCRN(nn.Module):
         spec_mag = torch.sqrt(spec_real**2 + spec_imag**2 + 1e-12)
 
         feat = torch.stack([spec_mag, spec_real, spec_imag], dim=1)  # (B,3,T,F)
-        # Pre-enhancement
-        p_feat = self.erb1.bm(feat)  # (B,3,T,24)
-        p_feat = self.preh(p_feat)  # (B,1,T,F)
-        pm = self.erb1.bs(p_feat)  # (B,1,T,F)
-        if not self.all_stage:
-            spec_enh = pm * spec.permute(0,3,1,2)  # (B,2,T,F)
-        else:
-            feat_enh = pm * feat  # (B,3,T,F)
 
-            feat_cat = torch.cat([feat, feat_enh], dim=1)  # (B,6,T,F)
-            feat = self.erb2.bm(feat_cat)  # (B,6,T,97)
-            feat = self.sfe(feat)     # (B,18,T,97)
+        feat = self.erb2.bm(feat)  # (B,6,T,97)
+        feat = self.sfe(feat)     # (B,18,T,97)
 
-            feat, en_outs = self.encoder(feat)
-            
-            feat1 = self.dpgrnn1(feat) # (B,16,T,25)
-            feat2 = self.dpgrnn2(feat1) # (B,16,T,25)
-            m_feat, de_s = self.decoder(feat2, en_outs)
+        feat, en_outs = self.encoder(feat)
+        
+        feat1 = self.dpgrnn1(feat) # (B,16,T,25)
+        # feat2 = self.glu(feat1)
+        feat3 = self.dpgrnn2(feat1) # (B,16,T,25)
 
-            m = self.erb2.bs(m_feat) * pm  # (B,2,T,F)
-            spec_enh = self.mask(m, spec.permute(0,3,1,2)) # (B,2,T,F)
+        dec_out, de_outs = self.decoder(feat3, en_outs)
+        # feat_flat = feat3.permute(0, 2, 3, 1).flatten(2).contiguous()  # (B,T,16*25)
+        # mask_linear = self.linear_block(feat_flat)  # (B,T,256)
+        # # 假设 mask_tanh.shape == [B, T, nfft]
+        # F = mask_linear.shape[-1] // 2
+        # mask_real = mask_linear[..., :F]      # [B, T, F]
+        # mask_imag = mask_linear[..., F:]      # [B, T, F]
+        # mask_c = torch.stack([mask_real, mask_imag], dim=1)  # [B, 2, T, F]        
+        # mask_tanh = self.ltanh(mask_c.permute(0,3,2,1)).permute(0,3,2,1)  # (B,T,256)
+
+        m = self.erb2.bs(dec_out)  # (B,2,T,F)
+        spec_enh = self.mask(m, spec.permute(0,3,1,2)) # (B,2,T,F)
 
         spec_enh = spec_enh.permute(0,2,3,1)  # (B,T,F,2)
         spec_enh = spec_enh.unsqueeze(1) # B, C, T, F, 2
@@ -569,7 +558,7 @@ def load_preh_into_gtcrn(gtcrn_model, ckpt_path, map_location=None, strict=False
     return gtcrn_model.load_preh_from_checkpoint(ckpt_path, map_location=map_location, strict=strict, prefix=prefix)
 
 if __name__ == "__main__":
-    model = GTCRN(all_stage=True).eval()
+    model = GTCRN().eval()
 
     """complexity count"""
     from ptflops import get_model_complexity_info

@@ -7,7 +7,7 @@ from collections import defaultdict
 import os
 
 def process_scp_file(file_path):
-    """处理单个SCP文件，计算各信噪比下的平均PESQ分数"""
+    """处理单个SCP文件，计算各信噪比下的平均ESTOI分数"""
     snr_scores = defaultdict(list)
     
     with open(file_path, 'r') as f:
@@ -31,8 +31,8 @@ def process_scp_file(file_path):
     return avg_scores
 
 
-def plot_multiple_results(results_dict, save_path='ESTOI_comparison.png'):
-    """绘制多个SCP文件的ESTOI分数对比图"""
+def plot_multiple_results(results_dict, save_path='PESQ_comparison.png'):
+    """绘制多个SCP文件的PESQ分数对比图"""
     if not results_dict:
         print("没有数据可绘制")
         return
@@ -49,6 +49,20 @@ def plot_multiple_results(results_dict, save_path='ESTOI_comparison.png'):
         # 按照标准信噪比顺序获取分数
         scores = [data.get(snr, 0) for snr in standard_snrs]
         plt.plot(standard_snrs, scores, 'o-', label=label, linewidth=2, markersize=8)
+        
+        # 计算一个小的垂直偏移，避免数值标签与点重叠
+        try:
+            y_min = min(scores)
+            y_max = max(scores)
+            y_range = max(1e-6, y_max - y_min)
+            offset = y_range * 0.02  # 偏移为值域的2%
+        except Exception:
+            offset = 0.01
+        
+        # 在每个点上方添加数值标签，保留两位小数
+        for x, y in zip(standard_snrs, scores):
+            # 如果需要可以在此处过滤掉无效值，如 y is None 或 np.isnan(y)
+            plt.text(x, y + offset, f"{y:.2f}", fontsize=9, ha='center', va='bottom')
     
     png_name = save_path.split('/')[-1].split('_')[0]
     plt.title(png_name, fontsize=14, pad=20)
@@ -91,40 +105,56 @@ if __name__ == "__main__":
     scp_files = [
         '/minioData/goodman/train_data/ha_lmdb/evalsets_noReverb/Ha_base_69MMacs_enh/' \
         'scoring_intrusive/PESQ.scp',
-        '/minioData/goodman/train_data/ha_lmdb/evalsets_noReverb/gtcrn_dual_decoder_stepUpdate_16ch_enh/' \
+        '/minioData/goodman/train_data/ha_lmdb/evalsets_noReverb/gtcrn_29M_Hyber_loss_128/' \
         'scoring_intrusive/PESQ.scp',    
-        '/minioData/goodman/train_data/ha_lmdb/evalsets_noReverb/dfnet_92MMacs_8ch_hybLoss_mrLoss_enh/' \
+        '/minioData/goodman/train_data/ha_lmdb/evalsets_noReverb/gtcrn_29M/' \
         'scoring_intrusive/PESQ.scp',
+        '/minioData/goodman/train_data/ha_lmdb/evalsets_noReverb/dpcrn_34M_Hyber_loss/' \
+        'scoring_intrusive/PESQ.scp',        
+        '/minioData/goodman/train_data/ha_lmdb/evalsets_noReverb/gtcrn_29M_Hyber_irm_128size/' \
+        'scoring_intrusive/PESQ.scp'
     ]
     png_save_path = '/data/goodman/torch_nn_train/SEtrain/Ha_denoise/plot_results/PESQ_comparison.png'
     main(scp_files, png_save_path)
     scp_files = [
         '/minioData/goodman/train_data/ha_lmdb/evalsets_noReverb/Ha_base_69MMacs_enh/' \
-        'scoring_intrusive/STOI.scp',
-        '/minioData/goodman/train_data/ha_lmdb/evalsets_noReverb/gtcrn_dual_decoder_stepUpdate_16ch_enh/' \
-        'scoring_intrusive/STOI.scp',    
-        '/minioData/goodman/train_data/ha_lmdb/evalsets_noReverb/dfnet_92MMacs_8ch_hybLoss_mrLoss_enh/' \
-        'scoring_intrusive/STOI.scp',
+        'scoring_intrusive/ESTOI.scp',
+        '/minioData/goodman/train_data/ha_lmdb/evalsets_noReverb/gtcrn_29M_Hyber_loss_128/' \
+        'scoring_intrusive/ESTOI.scp',    
+        '/minioData/goodman/train_data/ha_lmdb/evalsets_noReverb/gtcrn_29M/' \
+        'scoring_intrusive/ESTOI.scp',
+        '/minioData/goodman/train_data/ha_lmdb/evalsets_noReverb/dpcrn_34M_Hyber_loss/' \
+        'scoring_intrusive/ESTOI.scp',  
+        '/minioData/goodman/train_data/ha_lmdb/evalsets_noReverb/gtcrn_29M_Hyber_irm_128size/' \
+        'scoring_intrusive/ESTOI.scp'
     ]
-    png_save_path = '/data/goodman/torch_nn_train/SEtrain/Ha_denoise/plot_results/STOI_comparison.png'
+    png_save_path = '/data/goodman/torch_nn_train/SEtrain/Ha_denoise/plot_results/ESTOI_comparison.png'
+    main(scp_files, png_save_path)
+    scp_files = [
+        '/minioData/goodman/train_data/ha_lmdb/evalsets_noReverb/Ha_base_69MMacs_enh/' \
+        'scoring_intrusive/SISNR.scp',
+        '/minioData/goodman/train_data/ha_lmdb/evalsets_noReverb/gtcrn_29M_Hyber_loss_128/' \
+        'scoring_intrusive/SISNR.scp',    
+        '/minioData/goodman/train_data/ha_lmdb/evalsets_noReverb/gtcrn_29M/' \
+        'scoring_intrusive/SISNR.scp',
+        '/minioData/goodman/train_data/ha_lmdb/evalsets_noReverb/dpcrn_34M_Hyber_loss/' \
+        'scoring_intrusive/SISNR.scp',          
+        '/minioData/goodman/train_data/ha_lmdb/evalsets_noReverb/gtcrn_29M_Hyber_irm_128size/' \
+        'scoring_intrusive/SISNR.scp'
+    ]
+    png_save_path = '/data/goodman/torch_nn_train/SEtrain/Ha_denoise/plot_results/SISNR_comparison.png'
     main(scp_files, png_save_path)
     scp_files = [
         '/minioData/goodman/train_data/ha_lmdb/evalsets_noReverb/Ha_base_69MMacs_enh/' \
         'scoring_intrusive/SDR.scp',
-        '/minioData/goodman/train_data/ha_lmdb/evalsets_noReverb/gtcrn_dual_decoder_stepUpdate_16ch_enh/' \
+        '/minioData/goodman/train_data/ha_lmdb/evalsets_noReverb/gtcrn_29M_Hyber_loss_128/' \
         'scoring_intrusive/SDR.scp',    
-        '/minioData/goodman/train_data/ha_lmdb/evalsets_noReverb/dfnet_92MMacs_8ch_hybLoss_mrLoss_enh/' \
+        '/minioData/goodman/train_data/ha_lmdb/evalsets_noReverb/gtcrn_29M/' \
         'scoring_intrusive/SDR.scp',
+        '/minioData/goodman/train_data/ha_lmdb/evalsets_noReverb/dpcrn_34M_Hyber_loss/' \
+        'scoring_intrusive/SDR.scp',          
+        '/minioData/goodman/train_data/ha_lmdb/evalsets_noReverb/gtcrn_29M_Hyber_irm_128size/' \
+        'scoring_intrusive/SDR.scp'
     ]
     png_save_path = '/data/goodman/torch_nn_train/SEtrain/Ha_denoise/plot_results/SDR_comparison.png'
     main(scp_files, png_save_path)
-    scp_files = [
-        '/minioData/goodman/train_data/ha_lmdb/evalsets_noReverb/Ha_base_69MMacs_enh/' \
-        'scoring_intrusive/SISNR.scp',
-        '/minioData/goodman/train_data/ha_lmdb/evalsets_noReverb/gtcrn_dual_decoder_stepUpdate_16ch_enh/' \
-        'scoring_intrusive/SISNR.scp',    
-        '/minioData/goodman/train_data/ha_lmdb/evalsets_noReverb/dfnet_92MMacs_8ch_hybLoss_mrLoss_enh/' \
-        'scoring_intrusive/SISNR.scp',
-    ]
-    png_save_path = '/data/goodman/torch_nn_train/SEtrain/Ha_denoise/plot_results/SISNR_comparison.png'
-    main(scp_files, png_save_path)            

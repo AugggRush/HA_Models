@@ -148,8 +148,8 @@ class DenoiseGruNet(nn.Module):
 
             enhance_wav = self.trans.inverse_cpx(optc)  # [B,T,C] [1, 128, 1]
             enhance_wav = enhance_wav.float()
-            noise_est = ipt - enhance_wav  # 估计噪声
-        return enhance_wav, noise_est
+            # noise_est = ipt - enhance_wav  # 估计噪声
+        return enhance_wav.squeeze()
 
 def Test_DenoiseGroupGruNet_128():
     from thop import profile

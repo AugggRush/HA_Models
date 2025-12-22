@@ -18,9 +18,13 @@ from torch.utils.tensorboard import SummaryWriter
 from distributed_utils import reduce_value
 
 from models.gtcrn_end2end import GTCRN as gtcrn
+# from models.fspen import DPCRN_Light as dpcrn
+# from models.ha_base_snr import DenoiseGruNet as base_model
 # from models.gtcrn_end2end import dual_module as dual_model
 # from models.deepfilternet3 import DfNet
 from loss_factory import HybridLoss as Loss
+from cpx_compress_spec_dist_with_consistency import CpxCompressSpecDistWithConsistency as CCSDC_Loss
+# from loss_factory import MelSubbandLoss as Loss
 from dataloader import HaDataSetsFromLMDB as Dataset
 from scheduler import LinearWarmupCosineAnnealingLR as WarmupLR
 
@@ -37,7 +41,7 @@ torch.cuda.manual_seed_all(seed)
 def run(rank, config, args):
     if args.world_size > 1:
         os.environ['MASTER_ADDR'] = 'localhost'
-        os.environ['MASTER_PORT'] = '29501'
+        os.environ['MASTER_PORT'] = '1084'
         dist.init_process_group("nccl", rank=rank, world_size=args.world_size)
         torch.cuda.set_device(rank)
         dist.barrier()
@@ -68,10 +72,12 @@ def run(rank, config, args):
                                                         collate_fn=collate_fn)
         
     model = gtcrn(**config['network_config']).to(args.device)
-    if config['network_config'].get('all_stage', False):
-        print("Training all stages jointly.")
-        pre_ckp = (os.path.join(config['trainer']['exp_path'], 'checkpoints', config['stage1_model_name'] + '.tar'))       
-        model.load_preh_from_checkpoint(pre_ckp, args.device)
+    # model = gtcrn(**config['network_config']).to(args.device)
+    # if config['network_config'].get('all_stage', False) and \
+    #     (not config['trainer']['resume']) and config['stage1_model'] != None:
+    #     print("Training all stages jointly.")
+    #     pre_ckp = (config['stage1_model'] + '.tar')
+    #     model.load_preh_from_checkpoint(pre_ckp, args.device, strict=True)
     
     if args.world_size > 1:
         model = torch.nn.parallel.DistributedDataParallel(model, device_ids=[rank])
@@ -79,10 +85,11 @@ def run(rank, config, args):
     optimizer = torch.optim.Adam(params=model.parameters(), **config['optimizer'])
     # scheduler = torch.optim.lr_scheduler.MultiStepLR(optimizer, **config['scheduler']['kwargs'])
     # scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(optimizer, **config['scheduler']['kwargs'])
-    scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(optimizer, **config['scheduler']['kwargs'])
-    # scheduler = WarmupLR(optimizer, **config['scheduler']['kwargs'])
+    # scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(optimizer, **config['scheduler']['kwargs'])
+    scheduler = WarmupLR(optimizer, **config['scheduler']['kwargs'])
     
     loss_func = Loss(**config['loss']).to(args.device)
+    # loss_func = CCSDC_Loss(**config['ccsdc_loss']).to(args.device)
 
     trainer = Trainer(config=config, model=model,optimizer=optimizer, scheduler=scheduler, loss_func=loss_func,
                       train_dataloader=train_dataloader, validation_dataloader=validation_dataloader, 
@@ -153,6 +160,18 @@ class Trainer:
         if self.resume:
             self._resume_checkpoint()
 
+        # 确保初始化/恢复后的权重满足范围约束
+        self._clip_weights()
+
+    def _clip_weights(self):
+        """将模型所有可学习参数限制在 [-1, 1] 范围内。支持 DDP（model.module）。"""
+        mod = self.model.module if self.world_size > 1 else self.model
+        for name, p in mod.named_parameters():
+            if p is None:
+                continue
+            with torch.no_grad():
+                p.data.clamp_(-1.0, 1.0)
+
     def _set_train_mode(self):
         self.model.train()
 
@@ -197,8 +216,9 @@ class Trainer:
             clean = clean.to(self.device)
 
             enhanced = self.model(noisy)
-                
+
             loss = self.loss_func(enhanced, clean)
+            # loss = self.loss_func(clean, enhanced, noisy=noisy)
             if self.world_size > 1:
                 loss = reduce_value(loss)
             total_loss += loss
@@ -213,50 +233,8 @@ class Trainer:
             torch.nn.utils.clip_grad_norm_(self.model.parameters(), self.clip_grad_norm_value)
             self.optimizer.step()
 
-            if self.config['scheduler']['update_interval'] == 'step':
-                self.scheduler.step()
-
-        if self.world_size > 1 and (self.device != torch.device("cpu")):
-            torch.cuda.synchronize(self.device)
-
-        if self.rank == 0:
-            self.writer.add_scalars('lr', {'lr': self.optimizer.param_groups[0]['lr']}, epoch)
-            self.writer.add_scalars('train_loss', {'train_loss': total_loss / step}, epoch)
-
-    def _dual_train_epoch(self, epoch):
-        total_loss = 0
-        total_loss_s = 0
-        total_loss_n = 0
-        if hasattr(self.train_dataloader.dataset, "sample_data_per_epoch"):
-            self.train_dataloader.dataset.sample_data_per_epoch()
-        self.train_bar = tqdm(self.train_dataloader, ncols=125)
-
-        for step, (noisy, clean, snr) in enumerate(self.train_bar, 1):
-            noisy = noisy.to(self.device)
-            clean = clean.to(self.device)
-            noise = noisy - clean
-
-            enhanced, est_noise = self.model(noisy)
-                
-            loss_s = self.loss_func(enhanced, clean)
-            loss_n = self.loss_func(est_noise, noise)
-            if self.world_size > 1:
-                loss_s = reduce_value(loss_s)
-                loss_n = reduce_value(loss_n)
-            total_loss_s += loss_s.item()
-            total_loss_n += loss_n.item()
-            loss = loss_s + loss_n
-            total_loss += loss
-            self.train_bar.desc = '   train[{}/{}][{}]'.format(
-                epoch, self.epochs + self.start_epoch-1, datetime.now().strftime("%Y-%m-%d-%H:%M"))
-
-            self.train_bar.postfix = 'train_loss={:.3f}, loss_s={:.3f}, loss_n={:.3f}'\
-                                        .format(total_loss / step, total_loss_s / step, total_loss_n / step)
-
-            self.optimizer.zero_grad()
-            loss.backward()
-            torch.nn.utils.clip_grad_norm_(self.model.parameters(), self.clip_grad_norm_value)
-            self.optimizer.step()
+            # 将权重限制到 (-1, 1) 范围内，防止训练过程中参数发散
+            self._clip_weights()
 
             if self.config['scheduler']['update_interval'] == 'step':
                 self.scheduler.step()
@@ -267,8 +245,6 @@ class Trainer:
         if self.rank == 0:
             self.writer.add_scalars('lr', {'lr': self.optimizer.param_groups[0]['lr']}, epoch)
             self.writer.add_scalars('train_loss', {'train_loss': total_loss / step}, epoch)
-            self.writer.add_scalars('loss_s', {'loss_s': total_loss_s / step}, epoch)
-            self.writer.add_scalars('loss_n', {'loss_n': total_loss_n / step}, epoch)
 
     @torch.inference_mode()
     def _validation_epoch(self, epoch):
@@ -338,93 +314,6 @@ class Trainer:
 
         return total_loss / step, total_pesq_score / step
 
-    @torch.inference_mode()
-    def _dual_validation_epoch(self, epoch):
-        total_loss = 0
-        total_loss_s = 0
-        total_loss_n = 0
-        total_pesq_score = 0
-
-        self.validation_bar = tqdm(self.validation_dataloader, ncols=135)
-        for step, (noisy, clean, snr) in enumerate(self.validation_bar, 1):
-            noisy = noisy.to(self.device)
-            clean = clean.to(self.device)  
-            noise = noisy - clean
-            enhanced, est_noise = self.model(noisy)
-
-            loss_s = self.loss_func(enhanced, clean)
-            loss_n = self.loss_func(est_noise, noise)
-            if self.world_size > 1:
-                loss_s = reduce_value(loss_s)
-                loss_n = reduce_value(loss_n)
-            total_loss_s += loss_s.item()
-            total_loss_n += loss_n.item()
-            loss = loss_s + loss_n
-            total_loss += loss.item()
-
-            clean = clean.cpu().numpy()
-            enhanced = enhanced.detach().cpu().numpy()
-            noise = noise.detach().cpu().numpy()
-            est_noise = est_noise.detach().cpu().numpy()
-            clean_resample = librosa.resample(clean, orig_sr=self.config['samplerate'], target_sr=16000)
-            enhanced_resample = librosa.resample(enhanced, orig_sr=self.config['samplerate'], target_sr=16000)
-            def _safe_pesq(sr, clean, enhanced, mode):
-                """安全的 PESQ 计算函数"""
-                # 1. 检查音频有效性
-                if np.max(np.abs(clean)) < 1e-5 or np.max(np.abs(enhanced)) < 1e-5:
-                    print("One of the audio signals is too silent for PESQ calculation.")
-                    print(f"Max clean: {np.max(np.abs(clean))}, Max enhanced: {np.max(np.abs(enhanced))}")
-                    return np.nan
-                return pesq(sr, clean, enhanced, mode)
-            def _safe_normalize_audio(audio):
-                peak = np.max(np.abs(audio))
-                return audio / (peak + 1e-10) * 0.9  # 归一化到 90% 峰值  
-            try:
-                pesq_score_batch = Parallel(n_jobs=-1)(
-                delayed(_safe_pesq)(16000, c, e, 'wb') \
-                    for c, e in zip(_safe_normalize_audio(clean_resample), _safe_normalize_audio(enhanced_resample)))
-            except Exception as e:
-                print(f"PESQ 计算错误: {e}")
-                continue
-
-            pesq_score = torch.tensor(pesq_score_batch, device=self.device).mean()
-            if self.world_size > 1:
-                pesq_score = reduce_value(pesq_score)
-            total_pesq_score += pesq_score
-            
-            if self.rank == 0 and (epoch==1 or epoch %10 == 0) and step <= 30:
-                noisy_path = os.path.join(self.sample_path, 'sample_{}_noisy.wav'.format(step))
-                clean_path = os.path.join(self.sample_path, 'sample_{}_clean.wav'.format(step))
-                noise_path = os.path.join(self.sample_path, 'sample_{}_noise.wav'.format(step))
-                enhanced_path = os.path.join(self.sample_path, 'sample_{}_enh_epoch{}.wav'.format(step, str(epoch).zfill(3)))
-                estnoise_path = os.path.join(self.sample_path, 'sample_{}_estn_epoch{}.wav'.format(step, str(epoch).zfill(3)))
-                if not os.path.exists(noisy_path):
-                    noisy = noisy.cpu().numpy()
-                    sf.write(noisy_path, noisy[0], samplerate=self.config['samplerate'])
-                    sf.write(clean_path, clean[0], samplerate=self.config['samplerate'])
-                    sf.write(noise_path, noise[0], samplerate=self.config['samplerate'])
-
-                sf.write(enhanced_path, enhanced[0], samplerate=self.config['samplerate'])
-                sf.write(estnoise_path, est_noise[0], samplerate=self.config['samplerate'])
-
-            self.validation_bar.desc = 'validate[{}/{}][{}]'.format(
-                epoch, self.epochs + self.start_epoch-1, datetime.now().strftime("%Y-%m-%d-%H:%M"))
-
-            self.validation_bar.postfix = 'valid_loss={:.3f}, loss_s={:.3f}, loss_n={:.3f}, pesq={:.4f}'.format(
-                total_loss / step, total_loss_s / step, total_loss_n / step, total_pesq_score / step)
-
-        if (self.world_size > 1) and (self.device != torch.device("cpu")):
-            torch.cuda.synchronize(self.device)
-
-        if self.rank == 0:
-            self.writer.add_scalars(
-                'val_loss', {'val_loss': total_loss / step, 
-                             'loss_s': total_loss_s / step,
-                             'loss_n': total_loss_n / step,
-                             'pesq': total_pesq_score / step}, epoch)
-
-        return total_loss / step, total_pesq_score / step
-
     def train(self):
         if self.resume:
             self._resume_checkpoint()
@@ -433,12 +322,12 @@ class Trainer:
             if self.train_sampler is not None:
                 self.train_sampler.set_epoch(epoch)
 
+            self._set_train_mode()
+            self._train_epoch(epoch)
+
             self._set_eval_mode()
             valid_loss, score = self._validation_epoch(epoch)
 
-            self._set_train_mode()
-            self._train_epoch(epoch)
-      
             if self.config['scheduler']['update_interval'] == 'epoch':
                 if self.config['scheduler']['use_plateau']:
                     self.scheduler.step(score)
@@ -455,11 +344,9 @@ class Trainer:
 
             print('------------Training for {} epochs is done!------------'.format(self.epochs))
 
-
-
 if __name__ == '__main__':
     parser = argparse.ArgumentParser()
-    parser.add_argument('-C', '--config', default='configs/df_train_cfg.yaml')
+    parser.add_argument('-C', '--config', default='configs/gtcrn_cfg_train.yaml')
     parser.add_argument('-D', '--device', default='0', help='The index of the available devices, e.g. 0,1,2,3')
 
     args = parser.parse_args()

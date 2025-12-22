@@ -5,7 +5,7 @@ import soundfile as sf
 from tqdm import tqdm
 from omegaconf import OmegaConf
 from models.gtcrn_end2end import GTCRN as Model
-
+# from models.fspen import DPCRN_Light as Model
 def main(args):
     cfg_infer = OmegaConf.load(args.config)
     cfg_network = OmegaConf.load(cfg_infer.network.config)

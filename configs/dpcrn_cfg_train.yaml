@@ -99,7 +99,7 @@ trainer:
   epochs: 100
   save_checkpoint_interval: 1
   clip_grad_norm_value: 3.0
-  exp_path: /data/goodman/torch_nn_train/SEtrain/Ha_denoise/gtcrn_24M_Hyber_loss_train_128_clip1.0_realDecoder
+  exp_path: /data/goodman/torch_nn_train/SEtrain/Ha_denoise/dpcrn_34M_Hyber_loss_train_128size_clip1.0
   resume: False
   resume_datetime: 2025-11-13-03h26m
 
