@@ -236,9 +236,9 @@ class Encoder(nn.Module):
         self.en_convs = nn.ModuleList([
             ConvBlock(3*3, 8, (1,5), stride=(1,2), padding=(0,2), use_deconv=False, is_last=False),
             ConvBlock(8, 4, (1,5), stride=(1,2), padding=(0,2), groups=2, use_deconv=False, is_last=False),
-            GTConvBlock(4, 2, (3,3), stride=(1,1), padding=(0,1), dilation=(1,1), use_deconv=False),
-            GTConvBlock(4, 2, (3,3), stride=(1,1), padding=(0,1), dilation=(2,1), use_deconv=False),
-            GTConvBlock(4, 2, (3,3), stride=(1,1), padding=(0,1), dilation=(5,1), use_deconv=False)
+            GTConvBlock(4, 4, (3,3), stride=(1,1), padding=(0,1), dilation=(1,1), use_deconv=False),
+            GTConvBlock(4, 4, (3,3), stride=(1,1), padding=(0,1), dilation=(2,1), use_deconv=False),
+            GTConvBlock(4, 4, (3,3), stride=(1,1), padding=(0,1), dilation=(5,1), use_deconv=False)
         ])
 
     def forward(self, x):
@@ -339,103 +339,45 @@ def deepfilter_complex_filtering_1x1_conv_einsum(spectrum, mask):
     
     return filtered_spectrum
 
-class PreEnhNet(nn.Module):
-    def __init__(
-        self,
-        n_fft=256,
-        hop_len=48,
-        win_len=256,
-        in_channels=1,
-        emb_dim=8,
-        hidden_dim=8 * 2,
-        n_freqs=41,
-        dropout_p=0.1,        
-    ):
-        super().__init__()
-        self.n_fft = n_fft
-        self.hop_len = hop_len
-        self.win_len = win_len
-        
-        self.conv_1 = nn.Sequential(
-            nn.Conv2d(in_channels, emb_dim//4, (1, 1), (1, 1)),
-            CustomLayerNorm((1, n_freqs), stat_dims=(1, 3)),
-            nn.PReLU(emb_dim//4),
-        )
-        self.conv_2 = nn.Sequential(
-            nn.ConstantPad2d((1, 1, 1, 0), value=0.0),
-            nn.Conv2d(emb_dim//4, emb_dim//2, (2, 3), (1, 2), groups=emb_dim//4), # 32
-            CustomLayerNorm((1, n_freqs//2), stat_dims=(1, 3)),
-            nn.PReLU(emb_dim//2),
-        )
-        self.conv_3 = nn.Sequential(
-            nn.ConstantPad2d((1, 1, 1, 0), value=0.0),
-            nn.Conv2d(emb_dim//2, emb_dim, (2, 3), (1, 2), groups=emb_dim//2),  # 16
-            CustomLayerNorm((1, n_freqs//4), stat_dims=(1, 3)),
-            nn.PReLU(emb_dim),
-        )
-
-        self.dpr1 = DPGRNN(emb_dim, n_freqs//4, hidden_dim, emb_dim)
-        self.glu = ConvolutionalGLU(emb_dim, n_freqs=n_freqs//4, expansion_factor=2, dropout_p=dropout_p)
-        self.dpr2 = DPGRNN(emb_dim, n_freqs//4, hidden_dim, emb_dim)
-        self.linear_block = nn.Sequential(
-            nn.LayerNorm((emb_dim * (n_freqs//4))),
-            nn.Linear((emb_dim * (n_freqs//4)), n_freqs),
-            # nn.PReLU(),
-            nn.Dropout(dropout_p)
-        )
-        self.lsigmoid = LearnableSigmoid2d(n_freqs, beta=1)
-
-    def forward(self, x):
-        # x:(b,d,t,f)
-        x = self.conv_1(x)
-        x = self.conv_2(x)
-        x = self.conv_3(x)
-        
-        x = self.dpr1(x)
-        x = self.glu(x)
-        # x = self.dpr2(x)
-        x = x.permute(0, 2, 3, 1).flatten(2).contiguous()  # (b,t,d*f)
-
-        x = self.linear_block(x).unsqueeze(-1)  # (b,t,f,1)
-        x = self.lsigmoid(x.permute(0,2,1,3)).permute(0,3,2,1)  # (b,1,t,f)
-        return x
-
 class GTCRN(nn.Module):
     def __init__(
         self,
         n_fft=256,
         hop_len=48,
         win_len=256,
+        postfilter=False
     ):
         super().__init__()
         self.n_fft = n_fft
         self.hop_len = hop_len
         self.win_len = win_len
-
+        self.post_filter = postfilter
         self.sfe = SFE(3, 1)
         
-        self.erb2 = ERB(16, 17, nfft=n_fft, high_lim=12000, fs=24000)
+        self.erb2 = ERB(24, 24, nfft=n_fft, high_lim=12000, fs=24000)
         self.erb2.requires_grad_(False)
         self.encoder = Encoder()
         
-        self.dpgrnn1 = DPGRNN(4, 9, 16, 4)
-        self.dpgrnn2 = DPGRNN(4, 9, 16, 4)
+        self.dpgrnn1 = DPGRNN(4, 12, 16, 4)
+        self.dpgrnn2 = DPGRNN(4, 12, 16, 4)
 
-        # self.glu = ConvolutionalGLU(4, n_freqs=11, expansion_factor=2, dropout_p=0.1)
+        self.glu = ConvolutionalGLU(4, n_freqs=12, expansion_factor=2, dropout_p=0.1)
         
-        self.decoder = Decoder()
+        # self.decoder = Decoder()
 
-        # self.num_features2 = 41
+        self.num_features2 = 48
 
         self.mask = Mask()
 
-        # self.linear_block = nn.Sequential(
-        #     nn.LayerNorm((4 * 11)),
-        #     nn.Linear((4 * 11), 41*2),
-        #     # nn.PReLU(),
-        #     nn.Dropout(0.1)
-        # )
+        self.linear_block = nn.Sequential(
+            nn.LayerNorm((4 * 12)),
+            nn.Linear((4 * 12), self.num_features2),
+            nn.PReLU(),
+            nn.Linear(self.num_features2, self.num_features2),
+            # nn.Dropout(0.1)
+        )
         # self.ltanh = LearnableTanh2d(41, beta=1)
+        self.lsigm = LearnableSigmoid2d(self.num_features2, beta=1)
 
         self.stft = torch_asym_stft.STFT_asym(
             filter_length=n_fft, hop_length=hop_len, 
@@ -524,22 +466,29 @@ class GTCRN(nn.Module):
         feat, en_outs = self.encoder(feat)
         
         feat1 = self.dpgrnn1(feat) # (B,16,T,25)
-        # feat2 = self.glu(feat1)
-        feat3 = self.dpgrnn2(feat1) # (B,16,T,25)
+        feat2 = self.glu(feat1)
+        feat3 = self.dpgrnn2(feat2) # (B,16,T,25)
 
-        dec_out, de_outs = self.decoder(feat3, en_outs)
-        # feat_flat = feat3.permute(0, 2, 3, 1).flatten(2).contiguous()  # (B,T,16*25)
-        # mask_linear = self.linear_block(feat_flat)  # (B,T,256)
-        # # 假设 mask_tanh.shape == [B, T, nfft]
+        feat_flat = feat3.permute(0, 2, 3, 1).flatten(2).contiguous()  # (B,T,16*25)
+        mask_linear = self.linear_block(feat_flat)  # (B,T,256)
+        # 假设 mask_tanh.shape == [B, T, nfft]
         # F = mask_linear.shape[-1] // 2
         # mask_real = mask_linear[..., :F]      # [B, T, F]
         # mask_imag = mask_linear[..., F:]      # [B, T, F]
-        # mask_c = torch.stack([mask_real, mask_imag], dim=1)  # [B, 2, T, F]        
-        # mask_tanh = self.ltanh(mask_c.permute(0,3,2,1)).permute(0,3,2,1)  # (B,T,256)
+        # mask_c = torch.stack([mask_real, mask_imag], dim=1)  # [B, 2, T, F]
+        mask_c = mask_linear.unsqueeze(1)  # (B,1,T,256)   
+        mask_tanh = self.lsigm(mask_c.permute(0,3,2,1)).permute(0,3,2,1)  # (B,T,256)
 
-        m = self.erb2.bs(dec_out)  # (B,2,T,F)
-        spec_enh = self.mask(m, spec.permute(0,3,1,2)) # (B,2,T,F)
-
+        m = self.erb2.bs(mask_tanh)  # (B,2,T,F)
+        # spec_enh = self.mask(m, spec.permute(0,3,1,2)) # (B,2,T,F)
+        spec_enh = (m * spec.permute(0,3,1,2)) # (B,2,T,F)
+        if self.post_filter:
+            beta = 0.02
+            eps = 1e-12
+            mask = (m * spec_mag.unsqueeze(1) / (spec_mag.unsqueeze(1) + eps)).clamp(eps, 1)
+            mask_sin = mask * torch.sin(torch.pi * mask / 2).clamp_min(eps)
+            pf = (1 + beta) / (1 + beta * mask.div(mask_sin).pow(2))
+            spec_enh = spec_enh * pf
         spec_enh = spec_enh.permute(0,2,3,1)  # (B,T,F,2)
         spec_enh = spec_enh.unsqueeze(1) # B, C, T, F, 2
         m_output = self.stft.inverse_cpx(spec_enh)

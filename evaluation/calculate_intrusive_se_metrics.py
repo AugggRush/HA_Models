@@ -12,7 +12,7 @@ from p_tqdm import p_map
 from tqdm import tqdm
 
 
-METRICS = ("SDR", "SISNR", "PESQ", "ESTOI")
+METRICS = ("SDR", "SISNR", "PESQ", "ESTOI", "IEC_SNR")
 
 ################################################################
 # Definition of metrics
@@ -88,7 +88,11 @@ def sdr_metric(ref, inf):
 
     return 10*np.log10((np.sum(e_tagt**2)+1e-8) / (np.sum(e_res**2)+1e-8))
 
-
+def IEC_out_snr(inf, neg):
+    s_sep = (inf - neg) / 2
+    n_sep = (inf + neg) / 2
+    snr_out = 10 * np.log10(np.mean(s_sep ** 2) / np.mean(n_sep ** 2))
+    return snr_out
 ################################################################
 # Main entry
 ################################################################
@@ -98,12 +102,17 @@ def main(args):
         for line in f:
             uid, audio_path = line.strip().split()
             refs[uid] = audio_path
+    negs = {}
+    with open(args.neg_scp, "r") as f:
+        for line in f:
+            uid, audio_path = line.strip().split()
+            negs[uid] = audio_path
 
     data_pairs = []
     with open(args.inf_scp, "r") as f:
         for line in f:
             uid, audio_path = line.strip().split()
-            data_pairs.append((uid, refs[uid], audio_path))
+            data_pairs.append((uid, refs[uid], negs[uid], audio_path))
 
     ret = []
     
@@ -138,14 +147,18 @@ def main(args):
 
 
 def process_one_pair(data_pair):
-    uid, ref_path, inf_path = data_pair
+    uid, ref_path, neg_path, inf_path = data_pair
     ref, fs = sf.read(ref_path, dtype="float32")
+    neg, fs1 = sf.read(neg_path, dtype="float32")
     inf, fs2 = sf.read(inf_path, dtype="float32")
     # assert fs == fs2, (fs, fs2)
     if fs != fs2:
-        inf = librosa.resample(inf, orig_sr=fs2, target_sr=fs)
-        fs2 = fs
-    assert ref.shape == inf.shape, (ref.shape, inf.shape)
+        ref = librosa.resample(ref, orig_sr=fs, target_sr=fs2)
+        fs = fs2
+    if fs1 != fs2:
+        neg = librosa.resample(neg, orig_sr=fs1, target_sr=fs2)
+        fs1 = fs2
+    assert ref.shape == inf.shape == neg.shape, (ref.shape, neg.shape, inf.shape)
     scores = {}
     for metric in METRICS:
         if metric == "PESQ":
@@ -157,6 +170,8 @@ def process_one_pair(data_pair):
             scores[metric] = sisnr_metric(ref, inf)
         elif metric == "SDR":
             scores[metric] = sdr_metric(ref, inf)
+        elif metric == "IEC_SNR":
+            scores[metric] = IEC_out_snr(inf, neg)
         else:
             raise NotImplementedError(metric)
 
@@ -179,6 +194,12 @@ if __name__ == "__main__":
         required=True,
         help="Path to the scp file containing enhanced signals",
     )
+    parser.add_argument(
+        "--neg_scp",
+        type=str,
+        required=True,
+        help="Path to the scp file containing neg enhance signals",
+    )    
     parser.add_argument(
         "--output_dir",
         type=str,

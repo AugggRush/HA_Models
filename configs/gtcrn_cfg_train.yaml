@@ -11,8 +11,8 @@ optimizer:
 
 scheduler:
   kwargs:
-    warmup_steps: 50000
-    decay_until_step: 150000 #200000
+    warmup_steps: 8000
+    decay_until_step: 80000
     max_lr: 0.001
     min_lr: 1.0e-07
     init_lr: 0.0001
@@ -30,13 +30,21 @@ loss:
   compress_factor: 0.3
   eps: 1e-12
   lamda_ri: 30
-  lamda_mag: 70
+  lamda_mag: 100
   # sample_rate: ${samplerate}
   # nfft: ${FFT.n_fft}
   # hop_size: ${FFT.hop_length}
   # K: 25
   # phon: 40
   # eps: 1e-12
+
+stft_loss:
+  n_fft: ${FFT.n_fft}
+  hop_len: ${FFT.hop_length}
+  win_len: ${FFT.win_length}
+  window: 'hann_window'
+  weight_sc: 10.0
+  weight_mag: 100.0
 
 ccsdc_loss:
   alpha: 0.3
@@ -52,7 +60,7 @@ ccsdc_loss:
 
 train_dataset: 
   clean_file_path: 'prepare_datasets/train_clean_24k.csv'
-  noise_file_path: 'prepare_datasets/train_noise_24k_new.csv'
+  noise_file_path: 'prepare_datasets/train_noise_24k.csv'
   rir_file_path: 'prepare_datasets/train_rir_24k.csv'
   fs: 24000
   length_in_seconds: 8
@@ -60,13 +68,13 @@ train_dataset:
   train: True
   snr_db: [0, 25]
   dr_db: [-35, -15]
-  pure_noise_prob: 0.05
-  random_seed: 1117
+  pure_noise_prob: 0.0
+  random_seed: 1886
   max_readers: 256
 
 train_dataloader: 
-  batch_size: 32
-  num_workers: 4
+  batch_size: 96
+  num_workers: 8
   drop_last: True
   pin_memory: True     # 启用锁页内存
   prefetch_factor: 2     # 每个worker预取2个batch
@@ -74,7 +82,7 @@ train_dataloader:
 
 validation_dataset: 
   clean_file_path: 'prepare_datasets/val_clean_24k.csv'
-  noise_file_path: 'prepare_datasets/val_noise_24k_new.csv'
+  noise_file_path: 'prepare_datasets/val_noise_24k.csv'
   rir_file_path: 'prepare_datasets/val_rir_24k.csv'
   fs: 24000
   length_in_seconds: 8
@@ -82,13 +90,13 @@ validation_dataset:
   train: False
   snr_db: [0, 25]
   dr_db: [-35, -15]
-  pure_noise_prob: 0.05
-  random_seed: 2025
+  pure_noise_prob: 0.0
+  random_seed: 2000
   max_readers: 256
 
 validation_dataloader:
-  batch_size: 32
-  num_workers: 4
+  batch_size: 96
+  num_workers: 8
   pin_memory: True     # 启用锁页内存
   prefetch_factor: 2     # 每个worker预取2个batch
   persistent_workers: True # 保持worker进程  
@@ -96,12 +104,12 @@ validation_dataloader:
 samplerate: 24000
 
 trainer:
-  epochs: 100
+  epochs: 200
   save_checkpoint_interval: 1
-  clip_grad_norm_value: 3.0
-  exp_path: /data/goodman/torch_nn_train/SEtrain/Ha_denoise/gtcrn_24M_Hyber_loss_train_128_clip1.0_realDecoder
+  clip_grad_norm_value: 1
+  exp_path: /data/goodman/torch_nn_train/SEtrain/Ha_denoise/gtcrn_32M_fro-mse_irm_tau
   resume: False
-  resume_datetime: 2025-11-13-03h26m
+  resume_datetime: 2025-12-26-01h34m
 
 lmdb_datasets:
   train_lmdb_path: ./prepare_datasets/training_audio_tau_24k_noDereverb.lmdb

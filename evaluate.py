@@ -5,6 +5,7 @@ from omegaconf import OmegaConf
 def main(args):
     config = OmegaConf.load(args.config)
     enh_folder = config.network.enh_folder
+    neg_folder = config.network.neg_folder
     # enh_folder = '/data/ssd0/xiaobin.rong/Datasets/DNS3/test_noisy/'
     
     if args.metric == 'dnsmos':
@@ -23,6 +24,7 @@ def main(args):
         os.system(
             ('python ./evaluation/calculate_intrusive_se_metrics.py '
              f'--ref_scp {enh_folder}/ref.scp '
+             f'--neg_scp {neg_folder}/inf.scp '
              f'--inf_scp {enh_folder}/inf.scp '
              f'--output_dir {enh_folder}/scoring_intrusive '
              '--nj 8 '

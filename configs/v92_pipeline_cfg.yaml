@@ -1,0 +1,59 @@
+network_config:
+  # pipeline bin path
+  bin_path: /data/goodman/code/hearing_aid/A3062_se_sdk/build/bin/aitd_bes2800_v9_2_dev
+  # frame length in ms default 2ms                 
+  frame_len: 2
+  # fft length default 256
+  fft_len: 128
+  # dc mode 0-off 1-on default 1
+  dc_mode: 0
+  # afc mode 0-off 1 2 3 4 5 default 1    
+  afc_mode: 0            
+  # afc delay in us default 6000us
+  afc_delay: 6000   
+  # wdrc mode 0-off 1 2 3 default 1     
+  wdrc_mode: 0
+  # wdrc noise gate mode 0-disable 1-enable default 1
+  wdrc_ng_mode: 1
+  # wdrc noise gate threshold in dB default -40dB
+  wdrc_ng_th: 40
+  # wdrc noise gate ratio default 0.8
+  wdrc_ng_ratio: 0.5
+  # noise reduction mode 0-disable 1-enable default 1
+  nr1_mode: 1
+  # noise reduction mode 2 0-disable 1-enable default 0
+  nr2_mode: 0
+  # bf mode 0-disable 1-enable default 0
+  bf_mode: 0
+  # limiter mode 0-disable 1-enable default 1            
+  lim_mode: 0
+  # 0-disable（open loop） 1-enable（closed loop）
+  feedback_enable: 0      
+  # 0-轻度，使用gain1 1-重度，使用gain2 default 0 
+  hear_loss_level: 0  
+  # volume gain value in dB default 0dB    
+  vol_value: 0             
+  # speech gain value in dB default 0dB
+  speech_gain: 0           
+  # bgm gain value in dB default 0dB
+  bgm_gain: -20       
+  # dB 输入前向增益 defaule 0dB      
+  g1: 0                    
+  # dB 输出后向增益 defaule 0dB
+  g2: 0             
+  # dB 闭环路径增益 defaule 0dB       
+  g3: 0                   
+  # freq lowering
+  fl_mode: 0    
+  # 是否做帧长的切换
+  frame_len_switch: 0
+network:
+  neg_infer: False
+  enh_folder: /minioData/goodman/train_data/ha_lmdb/evalsets_NRL_test/v92_pipeline_nr1_test/
+  neg_folder: /minioData/goodman/train_data/ha_lmdb/evalsets_NRL_test/v92_pipeline_nr1_test_neg/  
+
+test_dataset: 
+  noisy_dir: /minioData/goodman/train_data/ha_lmdb/evalsets_noReverb_tau/noisy/
+  clean_dir: /minioData/goodman/train_data/ha_lmdb/evalsets_noReverb_tau/clean/
+  noise_dir: /minioData/goodman/train_data/ha_lmdb/evalsets_noReverb_tau/noise/
+  rir_dir: /data/goodman/data/v92_pipeline_test/rir_resample_24k/

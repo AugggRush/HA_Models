@@ -93,21 +93,22 @@ def interp(values: list, nelms_new: int):
 
 class BarkScale(torch.nn.Module):
 
-    def __init__(self, nfreqs: int = 256, nbarks: int = 49):
+    def __init__(self, nfreqs: int = 256, nbarks: int = 49, sample_rate: int = 16000):
         super(BarkScale, self).__init__()
 
+        # scale factor relative to the 16kHz base constants
+        hz_scale = float(sample_rate) / 16000.0
+
+        # pow_dens_correction uses same base factors, keep Sp scaling as before
         self.pow_dens_correction = Parameter(
             interp(pow_dens_correction_factor_16k, nbarks) * Sp_16k, requires_grad=False
         )
-        self.width_hz = Parameter(
-            interp(width_of_band_hz_16k, nbarks), requires_grad=False
-        )
-        self.width_bark = Parameter(
-            interp(width_of_band_bark_16k, nbarks), requires_grad=False
-        )
-        self.centre = Parameter(
-            interp(centre_of_band_hz_16k, nbarks), requires_grad=False
-        )
+        # width/centre in Hz need to be scaled according to sample_rate
+        width_hz_scaled = [w * hz_scale for w in width_of_band_hz_16k]
+        centre_hz_scaled = [c * hz_scale for c in centre_of_band_hz_16k]
+        self.width_hz = Parameter(interp(width_hz_scaled, nbarks), requires_grad=False)
+        self.width_bark = Parameter(interp(width_of_band_bark_16k, nbarks), requires_grad=False)
+        self.centre = Parameter(interp(centre_hz_scaled, nbarks), requires_grad=False)
 
         fbank = torch.zeros(nbarks, nfreqs)
 
@@ -169,9 +170,11 @@ Sl_16k = 1.866055e-001
 
 class Loudness(torch.nn.Module):
 
-    def __init__(self, nbark: int = 49):
+    def __init__(self, nbark: int = 49, sample_rate: int = 16000):
         super(Loudness, self).__init__()
 
+        # For now use the same absolute thresholds (interpolated) as base 16k values.
+        # If desired, a more precise calibration for other sample rates can be added here.
         self.threshs = Parameter(
             interp(abs_thresh_power_16k, nbark).unsqueeze(0).unsqueeze(0),
             requires_grad=False,
@@ -215,6 +218,7 @@ class PercepLoss(torch.nn.Module):
         win_length: int = 512,
         n_fft: int = 512,
         hop_length: int = 256,
+        sample_rate: int = 16000,
     ):
         super(PercepLoss, self).__init__()
 
@@ -228,10 +232,12 @@ class PercepLoss(torch.nn.Module):
             center=False,
         )
 
-        self.fbank = BarkScale(n_fft // 2, nbarks)
-        self.loudness = Loudness(nbarks)
+        # construct Bark/Loudness with sample_rate awareness
+        self.fbank = BarkScale(n_fft // 2, nbarks, sample_rate=sample_rate)
+        self.loudness = Loudness(nbarks, sample_rate=sample_rate)
 
-        out = np.asarray(butter(5, [325, 3250], fs=24000, btype="band"))
+        # redesign the butter bandpass using the provided sample_rate
+        out = np.asarray(butter(5, [325, 3250], fs=sample_rate, btype="band"))
         self.power_filter = Parameter(
             torch.as_tensor(out, dtype=torch.float32), requires_grad=False
         )

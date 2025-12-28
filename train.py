@@ -23,12 +23,13 @@ from models.gtcrn_end2end import GTCRN as gtcrn
 # from models.gtcrn_end2end import dual_module as dual_model
 # from models.deepfilternet3 import DfNet
 from loss_factory import HybridLoss as Loss
+from loss_factory import STFTLoss
 from cpx_compress_spec_dist_with_consistency import CpxCompressSpecDistWithConsistency as CCSDC_Loss
 # from loss_factory import MelSubbandLoss as Loss
 from dataloader import HaDataSetsFromLMDB as Dataset
 from scheduler import LinearWarmupCosineAnnealingLR as WarmupLR
 
-seed = 48
+seed = 98
 random.seed(seed)
 os.environ['PYTHONHASHSEED'] = str(seed)
 np.random.seed(seed)
@@ -41,7 +42,7 @@ torch.cuda.manual_seed_all(seed)
 def run(rank, config, args):
     if args.world_size > 1:
         os.environ['MASTER_ADDR'] = 'localhost'
-        os.environ['MASTER_PORT'] = '1084'
+        os.environ['MASTER_PORT'] = '8096'
         dist.init_process_group("nccl", rank=rank, world_size=args.world_size)
         torch.cuda.set_device(rank)
         dist.barrier()
@@ -72,12 +73,6 @@ def run(rank, config, args):
                                                         collate_fn=collate_fn)
         
     model = gtcrn(**config['network_config']).to(args.device)
-    # model = gtcrn(**config['network_config']).to(args.device)
-    # if config['network_config'].get('all_stage', False) and \
-    #     (not config['trainer']['resume']) and config['stage1_model'] != None:
-    #     print("Training all stages jointly.")
-    #     pre_ckp = (config['stage1_model'] + '.tar')
-    #     model.load_preh_from_checkpoint(pre_ckp, args.device, strict=True)
     
     if args.world_size > 1:
         model = torch.nn.parallel.DistributedDataParallel(model, device_ids=[rank])
@@ -90,6 +85,7 @@ def run(rank, config, args):
     
     loss_func = Loss(**config['loss']).to(args.device)
     # loss_func = CCSDC_Loss(**config['ccsdc_loss']).to(args.device)
+    # loss_func = STFTLoss(**config['stft_loss']).to(args.device)
 
     trainer = Trainer(config=config, model=model,optimizer=optimizer, scheduler=scheduler, loss_func=loss_func,
                       train_dataloader=train_dataloader, validation_dataloader=validation_dataloader, 
@@ -152,6 +148,7 @@ class Trainer:
                 if file.is_file():
                     shutil.copy2(file, self.code_path)
             shutil.copytree(Path(__file__).parent / 'models', Path(self.code_path) / 'models', dirs_exist_ok=True)
+            shutil.copytree(Path(__file__).parent / 'configs', Path(self.code_path) / 'configs', dirs_exist_ok=True)
             self.writer = SummaryWriter(self.log_path)
 
         self.start_epoch = 1
@@ -258,6 +255,7 @@ class Trainer:
             enhanced = self.model(noisy)
 
             loss = self.loss_func(enhanced, clean)
+            # loss = self.loss_func(clean, enhanced, noisy=noisy)            
             if self.world_size > 1:
                 loss = reduce_value(loss)
             total_loss += loss.item()

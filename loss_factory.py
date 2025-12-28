@@ -50,23 +50,27 @@ class HybridLoss(nn.Module):
             self.eps
         ).mean()
         
-        return self.lamda_ri*(real_loss + imag_loss) + self.lamda_mag*mag_loss + sisnr
+        return self.lamda_ri*(real_loss + imag_loss) + self.lamda_mag*mag_loss + 0.1 * sisnr
 
 
 class STFTLoss(nn.Module):
-    def __init__(self, n_fft=1024, hop_len=120, win_len=600, window="hann_window"):
+    def __init__(self, n_fft=1024, hop_len=120, win_len=600, window="hann_window", weight_sc=1, weight_mag=1):
         super().__init__()
         self.n_fft = n_fft
         self.hop_len = hop_len
         self.win_len = win_len
+        self.weight_sc = weight_sc
+        self.weight_mag = weight_mag
         self.register_buffer("window", getattr(torch, window)(win_len))
 
     def loss_spectral_convergence(self, x_mag, y_mag):
         return torch.norm(y_mag - x_mag, p="fro") / torch.norm(y_mag, p="fro")
 
     def loss_log_magnitude(self, x_mag, y_mag):
-        return torch.nn.functional.l1_loss(torch.log(y_mag), torch.log(x_mag))
-
+        return torch.nn.functional.l1_loss((y_mag)**0.3, (x_mag)**0.3)
+    def loss_log_magnitude2(self, x_mag, y_mag):
+        return torch.nn.functional.mse_loss((y_mag)**0.3, (x_mag)**0.3)
+    
     def forward(self, x, y):
         """x, y: (B, T), in time domain"""
         x = torch.stft(x, self.n_fft, self.hop_len, self.win_len, self.window.to(x.device), return_complex=True)
@@ -75,8 +79,8 @@ class STFTLoss(nn.Module):
         y_mag = torch.abs(y).clamp(1e-8)
         
         sc_loss = self.loss_spectral_convergence(x_mag, y_mag)
-        mag_loss = self.loss_log_magnitude(x_mag, y_mag)
-        loss = sc_loss + mag_loss
+        mag_loss = self.loss_log_magnitude2(x_mag, y_mag)
+        loss = self.weight_sc * sc_loss + self.weight_mag * mag_loss
 
         return loss
 
@@ -277,22 +281,8 @@ class MelSubbandLoss(nn.Module):
 		else:
 			loss_spec = (torch.mean(weights_t * mse_tensor) / weight_sum
 )
-		# -------------------------
-		# SISNR（向量化、数值稳定）
-		# -------------------------
-		# # 去均值
-		# enh = enhance - enhance.mean(dim=-1, keepdim=True)
-		# cleanz = clean - clean.mean(dim=-1, keepdim=True)
-		# 投影得到 target component
-        # SISNR loss
-		y_norm = torch.sum(enhance * clean, dim=-1, keepdim=True) * clean / (torch.sum(torch.square(clean),dim=-1,keepdim=True) + 1e-8)
-		sisnr = - 2*torch.log10(
-            torch.norm(y_norm, dim=-1, keepdim=True) / 
-            torch.norm(clean - y_norm, dim=-1, keepdim=True).clamp(self.eps) + 
-            self.eps
-        ).mean()
 
-		return 20 * loss_spec + sisnr
+		return loss_spec
 
 if __name__=='__main__':
     # pass

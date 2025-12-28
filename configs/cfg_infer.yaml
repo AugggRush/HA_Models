@@ -1,11 +1,13 @@
 test_dataset: 
-  noisy_dir: /minioData/goodman/train_data/ha_lmdb/evalsets_noReverb/noisy/
-  clean_dir: /minioData/goodman/train_data/ha_lmdb/evalsets_noReverb/clean/
-  noise_dir: /minioData/goodman/train_data/ha_lmdb/evalsets_noReverb/noise/
+  noisy_dir: /minioData/goodman/train_data/ha_lmdb/evalsets_NRL_test/noisy/
+  clean_dir: /minioData/goodman/train_data/ha_lmdb/evalsets_NRL_test/clean/
+  noise_dir: /minioData/goodman/train_data/ha_lmdb/evalsets_NRL_test/noise/
 
 network:
-  exp_path: /data/goodman/torch_nn_train/SEtrain/Ha_denoise/dpcrn_34M_Hyber_loss_train_128size_clip1.0_2025-12-19-12h47m
+  neg_infer: False
+  exp_path: /data/goodman/torch_nn_train/SEtrain/Ha_denoise/gtcrn_30M_fro-mse_irm_tau_2025-12-26-01h34m
   config: ${network.exp_path}/config.yaml
-  ckpt_name: best_model_085
+  ckpt_name: best_model_141
   checkpoint: ${network.exp_path}/checkpoints/${network.ckpt_name}.tar
-  enh_folder: /minioData/goodman/train_data/ha_lmdb/evalsets_noReverb/dpcrn_34M_Hyber_loss/
+  enh_folder: /minioData/goodman/train_data/ha_lmdb/evalsets_NRL_test/gtcrn_30M_fro-mse_irm_tau
+  neg_folder: /minioData/goodman/train_data/ha_lmdb/evalsets_NRL_test/gtcrn_30M_fro-mse_irm_tau_neg

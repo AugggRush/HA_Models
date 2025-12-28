@@ -192,8 +192,8 @@ class CpxCompressSpecDistWithConsistency(nn.Module):
 
 
 if __name__ == '__main__':
-    ipt = torch.rand(4, 24000, 2, dtype=torch.float32) * 0.06
+    ipt = torch.rand(4, 24000, dtype=torch.float32) * 0.06
     tgt = ipt - 1
-    noy = tgt + 0.05 * torch.rand(4, 24000, 2, dtype=torch.float32)
+    noy = tgt + 0.05 * torch.rand(4, 24000, dtype=torch.float32)
     loss = CpxCompressSpecDistWithConsistency(norm_flag=True)(ipt, tgt, noisy=noy)
     print(loss)
