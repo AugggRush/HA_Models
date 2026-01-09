@@ -23,7 +23,7 @@ from models.gtcrn_end2end import GTCRN as gtcrn
 # from models.gtcrn_end2end import dual_module as dual_model
 # from models.deepfilternet3 import DfNet
 from loss_factory import HybridLoss as Loss
-from loss_factory import STFTLoss
+# from loss_factory import STFTLoss
 from cpx_compress_spec_dist_with_consistency import CpxCompressSpecDistWithConsistency as CCSDC_Loss
 # from loss_factory import MelSubbandLoss as Loss
 from dataloader import HaDataSetsFromLMDB as Dataset
@@ -42,7 +42,7 @@ torch.cuda.manual_seed_all(seed)
 def run(rank, config, args):
     if args.world_size > 1:
         os.environ['MASTER_ADDR'] = 'localhost'
-        os.environ['MASTER_PORT'] = '8096'
+        os.environ['MASTER_PORT'] = '9700'
         dist.init_process_group("nccl", rank=rank, world_size=args.world_size)
         torch.cuda.set_device(rank)
         dist.barrier()

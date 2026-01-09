@@ -11,11 +11,11 @@ optimizer:
 
 scheduler:
   kwargs:
-    warmup_steps: 8000
-    decay_until_step: 80000
-    max_lr: 0.001
-    min_lr: 1.0e-07
-    init_lr: 0.0001
+    warmup_steps: 6000
+    decay_until_step: 60000
+    max_lr: 0.0001
+    min_lr: 1.0e-06
+    init_lr: 0.00003
   update_interval: step
   
 FFT:
@@ -30,7 +30,7 @@ loss:
   compress_factor: 0.3
   eps: 1e-12
   lamda_ri: 30
-  lamda_mag: 100
+  lamda_mag: 70
   # sample_rate: ${samplerate}
   # nfft: ${FFT.n_fft}
   # hop_size: ${FFT.hop_length}
@@ -60,16 +60,16 @@ ccsdc_loss:
 
 train_dataset: 
   clean_file_path: 'prepare_datasets/train_clean_24k.csv'
-  noise_file_path: 'prepare_datasets/train_noise_24k.csv'
+  noise_file_path: 'prepare_datasets/train_noise_picked_dns.csv'
   rir_file_path: 'prepare_datasets/train_rir_24k.csv'
   fs: 24000
   length_in_seconds: 8
   num_data_per_epoch: 100000
   train: True
   snr_db: [0, 25]
-  dr_db: [-35, -15]
+  dr_db: [-40, -20]
   pure_noise_prob: 0.0
-  random_seed: 1886
+  random_seed: 1987
   max_readers: 256
 
 train_dataloader: 
@@ -82,16 +82,16 @@ train_dataloader:
 
 validation_dataset: 
   clean_file_path: 'prepare_datasets/val_clean_24k.csv'
-  noise_file_path: 'prepare_datasets/val_noise_24k.csv'
+  noise_file_path: 'prepare_datasets/val_noise_picked_dns.csv'
   rir_file_path: 'prepare_datasets/val_rir_24k.csv'
   fs: 24000
   length_in_seconds: 8
   num_data_per_epoch: 20000
   train: False
   snr_db: [0, 25]
-  dr_db: [-35, -15]
+  dr_db: [-40, -20]
   pure_noise_prob: 0.0
-  random_seed: 2000
+  random_seed: 2026
   max_readers: 256
 
 validation_dataloader:
@@ -107,12 +107,12 @@ trainer:
   epochs: 200
   save_checkpoint_interval: 1
   clip_grad_norm_value: 1
-  exp_path: /data/goodman/torch_nn_train/SEtrain/Ha_denoise/gtcrn_32M_fro-mse_irm_tau
-  resume: False
-  resume_datetime: 2025-12-26-01h34m
+  exp_path: /data/goodman/torch_nn_train/SEtrain/Ha_denoise/gtcrn_30M_hyber_irm_pickDNS
+  resume: True
+  resume_datetime: 2026-01-08-11h44m
 
 lmdb_datasets:
-  train_lmdb_path: ./prepare_datasets/training_audio_tau_24k_noDereverb.lmdb
-  valid_lmdb_path: ./prepare_datasets/validation_audio_tau_24k_noDereverb.lmdb
+  train_lmdb_path: ./prepare_datasets/training_audio_pickDNS_24k_noDereverb.lmdb
+  valid_lmdb_path: ./prepare_datasets/validation_audio_pickDNS_24k_noDereverb.lmdb
 
 stage1_model: 

@@ -605,16 +605,16 @@ if __name__=='__main__':
     # train_dataset = HaSimuDataset(**config['train_dataset'])
     # train_dataset.sample_data_per_epoch()
     # # 创建转换器并执行转换
-    # converter = HaSimuDatasetToLMDB(train_dataset, './prepare_datasets/training_audio_dns_24k_noDereverb.lmdb', 4)
+    # converter = HaSimuDatasetToLMDB(train_dataset, './prepare_datasets/training_audio_pickDNS_noDereverb.lmdb', 4)
     # converter.convert_to_lmdb()
 
     # valid_dataset = HaSimuDataset(**config['validation_dataset'])
     # # 创建转换器并执行转换
-    # converter = HaSimuDatasetToLMDB(valid_dataset, './prepare_datasets/validation_audio_dns_24k_noDereverb.lmdb', 4)
+    # converter = HaSimuDatasetToLMDB(valid_dataset, './prepare_datasets/validation_audio_pickDNS_24k_noDereverb.lmdb', 4)
     # converter.convert_to_lmdb()
 
     # 输出目录
-    output_dir = "/minioData/goodman/train_data/ha_lmdb/evalsets_noReverb_dns/"
+    output_dir = "/minioData/goodman/train_data/ha_lmdb/evalsets_noReverb_pickDNS/"
     os.makedirs(output_dir, exist_ok=True)
 
     # 从 LMDB 数据集读取

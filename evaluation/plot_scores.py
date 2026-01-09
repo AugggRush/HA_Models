@@ -119,7 +119,11 @@ if __name__ == "__main__":
         '/minioData/goodman/train_data/ha_lmdb/evalsets_noReverb_tau/BYPASS/' \
         'scoring_dnsmos/OVRL.scp',
         '/minioData/goodman/train_data/ha_lmdb/evalsets_noReverb_tau/gtcrn_30M_fro-mse_irm_tau/' \
-        'scoring_dnsmos/OVRL.scp'        
+        'scoring_dnsmos/OVRL.scp', 
+        '/minioData/goodman/train_data/ha_lmdb/evalsets_noReverb_tau/gtcrn_32M_hyber_irm_tau_25dB/' \
+        'scoring_dnsmos/OVRL.scp',  
+        '/minioData/goodman/train_data/ha_lmdb/evalsets_noReverb_tau/gtcrn_32M_hyber_irm_tau/' \
+        'scoring_dnsmos/OVRL.scp',                      
     ]
     png_save_path = '/data/goodman/torch_nn_train/SEtrain/Ha_denoise/plot_results/OVRL_IF.png'
     main(scp_files, png_save_path)
@@ -135,7 +139,11 @@ if __name__ == "__main__":
         '/minioData/goodman/train_data/ha_lmdb/evalsets_noReverb_tau/BYPASS/' \
         'scoring_dnsmos/BAK.scp',
         '/minioData/goodman/train_data/ha_lmdb/evalsets_noReverb_tau/gtcrn_30M_fro-mse_irm_tau/' \
-        'scoring_dnsmos/BAK.scp'        
+        'scoring_dnsmos/BAK.scp',
+        '/minioData/goodman/train_data/ha_lmdb/evalsets_noReverb_tau/gtcrn_32M_hyber_irm_tau_25dB/' \
+        'scoring_dnsmos/BAK.scp',    
+        '/minioData/goodman/train_data/ha_lmdb/evalsets_noReverb_tau/gtcrn_32M_hyber_irm_tau/' \
+        'scoring_dnsmos/BAK.scp',             
     ]
     png_save_path = '/data/goodman/torch_nn_train/SEtrain/Ha_denoise/plot_results/BAK_IF.png'
     main(scp_files, png_save_path)
@@ -151,7 +159,11 @@ if __name__ == "__main__":
         '/minioData/goodman/train_data/ha_lmdb/evalsets_noReverb_tau/BYPASS/' \
         'scoring_dnsmos/SIG.scp',
         '/minioData/goodman/train_data/ha_lmdb/evalsets_noReverb_tau/gtcrn_30M_fro-mse_irm_tau/' \
-        'scoring_dnsmos/SIG.scp'        
+        'scoring_dnsmos/SIG.scp',      
+        '/minioData/goodman/train_data/ha_lmdb/evalsets_noReverb_tau/gtcrn_32M_hyber_irm_tau_25dB/' \
+        'scoring_dnsmos/SIG.scp',
+        '/minioData/goodman/train_data/ha_lmdb/evalsets_noReverb_tau/gtcrn_32M_hyber_irm_tau/' \
+        'scoring_dnsmos/SIG.scp',        
     ]
     png_save_path = '/data/goodman/torch_nn_train/SEtrain/Ha_denoise/plot_results/SIG_IF.png'
     main(scp_files, png_save_path)
@@ -167,7 +179,11 @@ if __name__ == "__main__":
         '/minioData/goodman/train_data/ha_lmdb/evalsets_noReverb_tau/BYPASS/' \
         'scoring_dnsmos/P808_MOS.scp',
         '/minioData/goodman/train_data/ha_lmdb/evalsets_noReverb_tau/gtcrn_30M_fro-mse_irm_tau/' \
-        'scoring_dnsmos/P808_MOS.scp'        
+        'scoring_dnsmos/P808_MOS.scp', 
+        '/minioData/goodman/train_data/ha_lmdb/evalsets_noReverb_tau/gtcrn_32M_hyber_irm_tau_25dB/' \
+        'scoring_dnsmos/P808_MOS.scp',  
+        '/minioData/goodman/train_data/ha_lmdb/evalsets_noReverb_tau/gtcrn_32M_hyber_irm_tau/' \
+        'scoring_dnsmos/P808_MOS.scp',                     
     ]
     png_save_path = '/data/goodman/torch_nn_train/SEtrain/Ha_denoise/plot_results/P808_MOS_IF.png'
     main(scp_files, png_save_path)
@@ -184,7 +200,11 @@ if __name__ == "__main__":
         '/minioData/goodman/train_data/ha_lmdb/evalsets_noReverb_tau/BYPASS/' \
         'scoring_intrusive/PESQ.scp',
         '/minioData/goodman/train_data/ha_lmdb/evalsets_noReverb_tau/gtcrn_30M_fro-mse_irm_tau/' \
-        'scoring_intrusive/PESQ.scp'        
+        'scoring_intrusive/PESQ.scp',   
+        '/minioData/goodman/train_data/ha_lmdb/evalsets_noReverb_tau/gtcrn_32M_hyber_irm_tau_25dB/' \
+        'scoring_intrusive/PESQ.scp',  
+        '/minioData/goodman/train_data/ha_lmdb/evalsets_noReverb_tau/gtcrn_32M_hyber_irm_tau/' \
+        'scoring_intrusive/PESQ.scp',          
     ]
     png_save_path = '/data/goodman/torch_nn_train/SEtrain/Ha_denoise/plot_results/PESQ_IF.png'
     main(scp_files, png_save_path)
@@ -200,7 +220,11 @@ if __name__ == "__main__":
         '/minioData/goodman/train_data/ha_lmdb/evalsets_noReverb_tau/BYPASS/' \
         'scoring_intrusive/ESTOI.scp',
         '/minioData/goodman/train_data/ha_lmdb/evalsets_noReverb_tau/gtcrn_30M_fro-mse_irm_tau/' \
-        'scoring_intrusive/ESTOI.scp'        
+        'scoring_intrusive/ESTOI.scp', 
+        '/minioData/goodman/train_data/ha_lmdb/evalsets_noReverb_tau/gtcrn_32M_hyber_irm_tau_25dB/' \
+        'scoring_intrusive/ESTOI.scp',  
+        '/minioData/goodman/train_data/ha_lmdb/evalsets_noReverb_tau/gtcrn_32M_hyber_irm_tau/' \
+        'scoring_intrusive/ESTOI.scp',                      
     ]
     png_save_path = '/data/goodman/torch_nn_train/SEtrain/Ha_denoise/plot_results/ESTOI_IF.png'
     main(scp_files, png_save_path)
@@ -216,7 +240,11 @@ if __name__ == "__main__":
         '/minioData/goodman/train_data/ha_lmdb/evalsets_noReverb_tau/BYPASS/' \
         'scoring_intrusive/SISNR.scp',
         '/minioData/goodman/train_data/ha_lmdb/evalsets_noReverb_tau/gtcrn_30M_fro-mse_irm_tau/' \
-        'scoring_intrusive/SISNR.scp'        
+        'scoring_intrusive/SISNR.scp', 
+        '/minioData/goodman/train_data/ha_lmdb/evalsets_noReverb_tau/gtcrn_32M_hyber_irm_tau_25dB/' \
+        'scoring_intrusive/SISNR.scp',      
+        '/minioData/goodman/train_data/ha_lmdb/evalsets_noReverb_tau/gtcrn_32M_hyber_irm_tau/' \
+        'scoring_intrusive/SISNR.scp',         
     ]
     png_save_path = '/data/goodman/torch_nn_train/SEtrain/Ha_denoise/plot_results/SISNR_IF.png'
     main(scp_files, png_save_path)
@@ -232,7 +260,11 @@ if __name__ == "__main__":
         '/minioData/goodman/train_data/ha_lmdb/evalsets_noReverb_tau/BYPASS/' \
         'scoring_intrusive/SDR.scp',
         '/minioData/goodman/train_data/ha_lmdb/evalsets_noReverb_tau/gtcrn_30M_fro-mse_irm_tau/' \
-        'scoring_intrusive/SDR.scp'        
+        'scoring_intrusive/SDR.scp',    
+        '/minioData/goodman/train_data/ha_lmdb/evalsets_noReverb_tau/gtcrn_32M_hyber_irm_tau_25dB/' \
+        'scoring_intrusive/SDR.scp',    
+        '/minioData/goodman/train_data/ha_lmdb/evalsets_noReverb_tau/gtcrn_32M_hyber_irm_tau/' \
+        'scoring_intrusive/SDR.scp',           
     ]
     png_save_path = '/data/goodman/torch_nn_train/SEtrain/Ha_denoise/plot_results/SDR_IF.png'
     main(scp_files, png_save_path)
@@ -248,7 +280,11 @@ if __name__ == "__main__":
         '/minioData/goodman/train_data/ha_lmdb/evalsets_noReverb_tau/BYPASS/' \
         'scoring_intrusive/IEC_SNR.scp',
         '/minioData/goodman/train_data/ha_lmdb/evalsets_noReverb_tau/gtcrn_30M_fro-mse_irm_tau/' \
-        'scoring_intrusive/IEC_SNR.scp'        
+        'scoring_intrusive/IEC_SNR.scp', 
+        '/minioData/goodman/train_data/ha_lmdb/evalsets_noReverb_tau/gtcrn_32M_hyber_irm_tau_25dB/' \
+        'scoring_intrusive/IEC_SNR.scp',  
+        '/minioData/goodman/train_data/ha_lmdb/evalsets_noReverb_tau/gtcrn_32M_hyber_irm_tau/' \
+        'scoring_intrusive/IEC_SNR.scp',              
     ]
     png_save_path = '/data/goodman/torch_nn_train/SEtrain/Ha_denoise/plot_results/IEC_SNR_IF.png'
     main(scp_files, png_save_path)

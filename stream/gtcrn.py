@@ -2,15 +2,11 @@
 GTCRN: ShuffleNetV2 + SFE + TRA + 2 DPGRNN
 Ultra tiny, 33.0 MMACs, 23.67 K params
 """
-import sys
-sys.path.append(".")
-sys.path.append("..")
 import torch
 import numpy as np
 import torch.nn as nn
 from einops import rearrange
-import putils.torch_asym_stft as torch_asym_stft
-from models.lisennet.generator.dpr_layer import ConvolutionalGLU, CustomLayerNorm
+import torch_asym_stft
 
 class ERB(nn.Module):
     def __init__(self, erb_subband_1, erb_subband_2, nfft=512, high_lim=8000, fs=16000):
@@ -230,6 +226,60 @@ class DPGRNN(nn.Module):
         return dual_out
 
 
+class CustomLayerNorm(nn.Module):
+    def __init__(self, input_dims, stat_dims=(1,), num_dims=4, eps=1e-5):
+        super().__init__()
+        assert isinstance(input_dims, tuple) and isinstance(stat_dims, tuple)
+        assert len(input_dims) == len(stat_dims)
+        param_size = [1] * num_dims
+        for input_dim, stat_dim in zip(input_dims, stat_dims):
+            param_size[stat_dim] = input_dim
+        self.gamma = torch.nn.parameter.Parameter(torch.Tensor(*param_size).to(torch.float32))
+        self.beta = torch.nn.parameter.Parameter(torch.Tensor(*param_size).to(torch.float32))
+        torch.nn.init.ones_(self.gamma)
+        torch.nn.init.zeros_(self.beta)
+        self.eps = eps
+        self.stat_dims = stat_dims
+        self.num_dims = num_dims
+
+    def forward(self, x):
+        assert x.ndim == self.num_dims, print(
+            "Expect x to have {} dimensions, but got {}".format(self.num_dims, x.ndim))
+
+        mu_ = x.mean(dim=self.stat_dims, keepdim=True)  # [B,1,T,F]
+        std_ = torch.sqrt(
+            x.var(dim=self.stat_dims, unbiased=False, keepdim=True) + self.eps
+        )  # [B,1,T,F]
+        x_hat = ((x - mu_) / std_) * self.gamma + self.beta
+        return x_hat
+
+
+class ConvolutionalGLU(nn.Module):
+    def __init__(self, emb_dim, n_freqs=32, expansion_factor=2, dropout_p=0.1):
+        super().__init__()
+        hidden_dim = int(emb_dim * expansion_factor)
+        self.norm = CustomLayerNorm((emb_dim, n_freqs), stat_dims=(1, 3))
+        self.fc1 = nn.Conv2d(emb_dim, hidden_dim * 2, 1)
+        self.dwconv = nn.Sequential(
+            nn.ConstantPad2d((1, 1, 2, 0), value=0.0),
+            nn.Conv2d(hidden_dim, hidden_dim, 3, 1, groups=hidden_dim),
+        )
+        self.act = nn.Mish()
+        self.fc2 = nn.Conv2d(hidden_dim, emb_dim, 1)
+        self.dropout = nn.Dropout(dropout_p)
+
+    def forward(self, x):
+        # x:(b,d,t,f)
+        res = x
+        x = self.norm(x)
+        x, v = self.fc1(x).chunk(2, dim=1)
+        x = self.act(self.dwconv(x)) * v
+        x = self.dropout(x)
+        x = self.fc2(x)
+        x = x + res
+        return x
+
+
 class Encoder(nn.Module):
     def __init__(self):
         super().__init__()
@@ -302,103 +352,6 @@ class Mask(nn.Module):
         s_imag = spec[:,1] * mask[:,0] + spec[:,0] * mask[:,1]
         s = torch.stack([s_real, s_imag], dim=1)  # (B,2,T,F)
         return s
-    
-def deepfilter_complex_filtering_1x1_conv_einsum(spectrum, mask):
-    """
-    使用einsum优化的版本，适用于1x1卷积输出的mask
-    """
-    B, _, T, F = spectrum.shape
-    
-    # 验证mask通道数
-    assert mask.shape[1] == 10, "mask的通道数应该是2 * 5=10"
-    
-    # 重塑mask
-    mask_reshaped = mask.view(B, 2, 5, T, F).permute(0, 1, 3, 4, 2)  # (B, 2, T, F, 5)
-    
-    # 频谱填充和unfold
-    spectrum_padded = torch.nn.functional.pad(spectrum, (2, 2), mode='constant', value=0)
-    unfolded_spectrum = spectrum_padded.unfold(3, 5, 1)  # (B, 2, T, F, 5)
-    
-    # 使用einsum进行高效的复数乘加运算
-    # 实部: sum(Re(spec)*Re(mask) - Im(spec)*Im(mask))
-    real_real = torch.einsum('btfk,btfk->btf', 
-                           unfolded_spectrum[:, 0], mask_reshaped[:, 0])
-    imag_imag = torch.einsum('btfk,btfk->btf', 
-                           unfolded_spectrum[:, 1], mask_reshaped[:, 1])
-    real_part = (real_real + imag_imag)
-    
-    # 虚部: sum(Re(spec)*Im(mask) + Im(spec)*Re(mask))
-    real_imag = torch.einsum('btfk,btfk->btf', 
-                           unfolded_spectrum[:, 0], mask_reshaped[:, 1])
-    imag_real = torch.einsum('btfk,btfk->btf', 
-                           unfolded_spectrum[:, 1], mask_reshaped[:, 0])
-    imag_part = (real_imag + imag_real)
-    
-    # 合并结果
-    filtered_spectrum = torch.stack([real_part, imag_part], dim=1)  # (B, 2, T, F)
-    
-    return filtered_spectrum
-
-class PreEnhNet(nn.Module):
-    def __init__(
-        self,
-        n_fft=256,
-        hop_len=48,
-        win_len=256,
-        in_channels=1,
-        emb_dim=8,
-        hidden_dim=8 * 2,
-        n_freqs=41,
-        dropout_p=0.1,        
-    ):
-        super().__init__()
-        self.n_fft = n_fft
-        self.hop_len = hop_len
-        self.win_len = win_len
-        
-        self.conv_1 = nn.Sequential(
-            nn.Conv2d(in_channels, emb_dim//4, (1, 1), (1, 1)),
-            CustomLayerNorm((1, n_freqs), stat_dims=(1, 3)),
-            nn.PReLU(emb_dim//4),
-        )
-        self.conv_2 = nn.Sequential(
-            nn.ConstantPad2d((1, 1, 1, 0), value=0.0),
-            nn.Conv2d(emb_dim//4, emb_dim//2, (2, 3), (1, 2), groups=emb_dim//4), # 32
-            CustomLayerNorm((1, n_freqs//2), stat_dims=(1, 3)),
-            nn.PReLU(emb_dim//2),
-        )
-        self.conv_3 = nn.Sequential(
-            nn.ConstantPad2d((1, 1, 1, 0), value=0.0),
-            nn.Conv2d(emb_dim//2, emb_dim, (2, 3), (1, 2), groups=emb_dim//2),  # 16
-            CustomLayerNorm((1, n_freqs//4), stat_dims=(1, 3)),
-            nn.PReLU(emb_dim),
-        )
-
-        self.dpr1 = DPGRNN(emb_dim, n_freqs//4, hidden_dim, emb_dim)
-        self.glu = ConvolutionalGLU(emb_dim, n_freqs=n_freqs//4, expansion_factor=2, dropout_p=dropout_p)
-        self.dpr2 = DPGRNN(emb_dim, n_freqs//4, hidden_dim, emb_dim)
-        self.linear_block = nn.Sequential(
-            nn.LayerNorm((emb_dim * (n_freqs//4))),
-            nn.Linear((emb_dim * (n_freqs//4)), n_freqs),
-            # nn.PReLU(),
-            nn.Dropout(dropout_p)
-        )
-        self.lsigmoid = LearnableSigmoid2d(n_freqs, beta=1)
-
-    def forward(self, x):
-        # x:(b,d,t,f)
-        x = self.conv_1(x)
-        x = self.conv_2(x)
-        x = self.conv_3(x)
-        
-        x = self.dpr1(x)
-        x = self.glu(x)
-        # x = self.dpr2(x)
-        x = x.permute(0, 2, 3, 1).flatten(2).contiguous()  # (b,t,d*f)
-
-        x = self.linear_block(x).unsqueeze(-1)  # (b,t,f,1)
-        x = self.lsigmoid(x.permute(0,2,1,3)).permute(0,3,2,1)  # (b,1,t,f)
-        return x
 
 class GTCRN(nn.Module):
     def __init__(
@@ -423,8 +376,6 @@ class GTCRN(nn.Module):
         self.dpgrnn2 = DPGRNN(4, 12, 16, 4)
 
         self.glu = ConvolutionalGLU(4, n_freqs=12, expansion_factor=2, dropout_p=0.1)
-        
-        # self.decoder = Decoder()
 
         self.num_features2 = 48
 
@@ -433,10 +384,8 @@ class GTCRN(nn.Module):
         self.linear_block = nn.Sequential(
             nn.LayerNorm((4 * 12)),
             nn.Linear((4 * 12), self.num_features2),
-            # nn.PReLU(),
             nn.Dropout(0.1)
         )
-        # self.ltanh = LearnableTanh2d(41, beta=1)
         self.lsigm = LearnableSigmoid2d(self.num_features2, beta=1)
 
         self.stft = torch_asym_stft.STFT_asym(
@@ -446,64 +395,6 @@ class GTCRN(nn.Module):
         # 固定这些模块的参数
         self.sfe.requires_grad_(False)
         self.stft.requires_grad_(False)
-
-    def load_preh_from_checkpoint(self, ckpt_path, map_location=None, strict=False, prefix="preh."):
-        """
-        从 checkpoint 中只加载 PreEnhNet(self.preh) 的参数到当前模型。
-        支持以下几种 checkpoint/state_dict 格式：
-         - torch.save(model.state_dict(), path)
-         - torch.save({'state_dict': model.state_dict(), ...}, path)
-         - DataParallel 保存时带 'module.' 前缀
-        参数:
-         - ckpt_path: checkpoint 文件路径
-         - map_location: 传给 torch.load 的 map_location（默认 cpu）
-         - strict: 传给 load_state_dict 的 strict
-         - prefix: 在 state_dict 中定位 preh 的键前缀，默认 'preh.'
-        返回:
-         - loaded_keys_count: 成功加载的键数量
-        典型用法（Trainer 中）：
-         gtcrn = GTCRN(all_stage=True)
-         gtcrn.load_preh_from_checkpoint('pretrained_preh.pth')
-        """
-        map_location = map_location if map_location is not None else "cpu"
-        ckpt = torch.load(ckpt_path, map_location=map_location)
-        # 提取 state_dict
-        if isinstance(ckpt, dict) and "model" in ckpt:
-            state_dict = ckpt["model"]
-        elif isinstance(ckpt, dict) and all(isinstance(v, torch.Tensor) for v in ckpt.values()):
-            state_dict = ckpt
-        else:
-            raise RuntimeError("未能识别 checkpoint 格式")
-        # 如果没有以 prefix 开头的参数，则尝试直接加载全部参数
-        preh_state = {k: v for k, v in state_dict.items() if k.startswith(prefix)}
-        if len(preh_state) == 0:
-            # 尝试直接加载全部参数
-            try:
-                loaded = self.preh.load_state_dict(state_dict, strict=strict)
-                print(f"[load_preh_from_checkpoint] 直接加载全部参数，成功加载 {len(loaded.keys())} 个参数。")
-                return len(loaded.keys())
-            except Exception as e:
-                print(f"[load_preh_from_checkpoint] 加载失败: {e}")
-                return 0
-
-            # 加载到 self.preh
-        try:
-            missing, unexpected = self.preh.load_state_dict(preh_state, strict=strict)
-            # load_state_dict 返回 None 或 NamedTuple（PyTorch 2.x 会抛出异常或返回 None）
-            # 统一打印信息
-            print(f"[load_preh_from_checkpoint] 从 {ckpt_path} 加载 PreEnhNet 参数，键数量: {len(preh_state)}， strict={strict}")
-            return len(preh_state)
-        except Exception as e:
-            # 在旧版本 PyTorch 上 load_state_dict 直接接受 dict 并返回 None 或抛异常
-            # 为兼容性，尝试用 non-strict 方式加载以打印更多信息
-            if strict:
-                print(f"[load_preh_from_checkpoint] 严格加载失败，错误: {e}。可尝试 strict=False 继续。")
-                raise
-            else:
-                # 最后尝试宽松加载
-                self.preh.load_state_dict(preh_state, strict=False)
-                print(f"[load_preh_from_checkpoint] 宽松模式加载成功（strict=False），键数量: {len(preh_state)}")
-                return len(preh_state)
 
     def forward(self, x):
         """
@@ -531,16 +422,11 @@ class GTCRN(nn.Module):
 
         feat_flat = feat3.permute(0, 2, 3, 1).flatten(2).contiguous()  # (B,T,16*25)
         mask_linear = self.linear_block(feat_flat)  # (B,T,256)
-        # 假设 mask_tanh.shape == [B, T, nfft]
-        # F = mask_linear.shape[-1] // 2
-        # mask_real = mask_linear[..., :F]      # [B, T, F]
-        # mask_imag = mask_linear[..., F:]      # [B, T, F]
-        # mask_c = torch.stack([mask_real, mask_imag], dim=1)  # [B, 2, T, F]
+
         mask_c = mask_linear.unsqueeze(1)  # (B,1,T,256)   
         mask_tanh = self.lsigm(mask_c.permute(0,3,2,1)).permute(0,3,2,1)  # (B,T,256)
 
         m = self.erb2.bs(mask_tanh)  # (B,2,T,F)
-        # spec_enh = self.mask(m, spec.permute(0,3,1,2)) # (B,2,T,F)
         spec_enh = (m * spec.permute(0,3,1,2)) # (B,2,T,F)
         if self.post_filter:
             beta = 0.02
@@ -557,15 +443,6 @@ class GTCRN(nn.Module):
 
         return m_output
 
-# 顶层便捷函数，Trainer 可直接调用
-def load_preh_into_gtcrn(gtcrn_model, ckpt_path, map_location=None, strict=False, prefix="preh."):
-    """
-    Trainer 可调用的便捷函数：将 checkpoint 中的 PreEnhNet 参数载入给定的 gtcrn_model。
-    """
-    if not isinstance(gtcrn_model, GTCRN):
-        raise ValueError("gtcrn_model 必须是 GTCRN 实例")
-    return gtcrn_model.load_preh_from_checkpoint(ckpt_path, map_location=map_location, strict=strict, prefix=prefix)
-
 if __name__ == "__main__":
     model = GTCRN().eval()
 
@@ -577,16 +454,3 @@ if __name__ == "__main__":
     for p in model.parameters():
         params += p.numel()
     print(flops, params/1e3)
-
-    # """causality check"""
-    # a = torch.randn(1, 16000)
-    # b = torch.randn(1, 16000)
-    # c = torch.randn(1, 16000)
-    # x1 = torch.cat([a, b], dim=1)
-    # x2 = torch.cat([a, c], dim=1)
-
-    # y1 = model(x1)[0]
-    # y2 = model(x2)[0]
-
-    # print((y1[:16000-256*2] - y2[:16000-256*2]).abs().max())
-    # print((y1[16000:] - y2[16000:]).abs().max())

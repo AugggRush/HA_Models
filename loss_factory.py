@@ -66,7 +66,7 @@ class STFTLoss(nn.Module):
     def loss_spectral_convergence(self, x_mag, y_mag):
         return torch.norm(y_mag - x_mag, p="fro") / torch.norm(y_mag, p="fro")
 
-    def loss_log_magnitude(self, x_mag, y_mag):
+    def loss_log_magnitude1(self, x_mag, y_mag):
         return torch.nn.functional.l1_loss((y_mag)**0.3, (x_mag)**0.3)
     def loss_log_magnitude2(self, x_mag, y_mag):
         return torch.nn.functional.mse_loss((y_mag)**0.3, (x_mag)**0.3)
