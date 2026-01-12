@@ -351,16 +351,16 @@ class SpectralSmoothLoss(nn.Module):
 			kernel = kernel.view(1, 1, -1)
 
 			# 频域二阶差分
-			B, T, F = x.shape
-			x_pad_f = F.pad(x, (1, 1), mode='replicate')  # [B, T, F+2]
-			x_flat = x_pad_f.view(B*T, 1, F+2)
-			second_diff_f = F.conv1d(x_flat, kernel, padding=0).view(B, T, F)
+			B, T, n_freqs = x.shape
+			x_pad_f = torch.nn.functional.pad(x, (1, 1), mode='replicate')  # [B, T, n_freqs+2]
+			x_flat = x_pad_f.view(B*T, 1, n_freqs+2)
+			second_diff_f = torch.nn.functional.conv1d(x_flat, kernel, padding=0).view(B, T, n_freqs)
 			freq_smooth = torch.mean(second_diff_f ** 2)
 
 			# 时间轴二阶差分
-			x_pad_t = F.pad(x.transpose(1, 2), (1, 1), mode='replicate')  # [B, F, T+2]
-			x_flat_t = x_pad_t.view(B*F, 1, T+2)
-			second_diff_t = F.conv1d(x_flat_t, kernel, padding=0).view(B, F, T).transpose(1, 2)
+			x_pad_t = torch.nn.functional.pad(x.transpose(1, 2), (1, 1), mode='replicate')  # [B, n_freqs, T+2]
+			x_flat_t = x_pad_t.view(B*n_freqs, 1, T+2)
+			second_diff_t = torch.nn.functional.conv1d(x_flat_t, kernel, padding=0).view(B, n_freqs, T).transpose(1, 2)
 			time_smooth = torch.mean(second_diff_t ** 2)
 
 			return self.weight_freq * freq_smooth + self.weight_time * time_smooth
