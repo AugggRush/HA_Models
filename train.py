@@ -23,6 +23,7 @@ from models.gtcrn_end2end import GTCRN as gtcrn
 # from models.gtcrn_end2end import dual_module as dual_model
 # from models.deepfilternet3 import DfNet
 from loss_factory import HybridLoss as Loss
+from loss_factory import HybridLossWithSmooth  # 新增: 带平滑约束的混合损失
 # from loss_factory import STFTLoss
 from cpx_compress_spec_dist_with_consistency import CpxCompressSpecDistWithConsistency as CCSDC_Loss
 # from loss_factory import MelSubbandLoss as Loss
@@ -82,8 +83,13 @@ def run(rank, config, args):
     # scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(optimizer, **config['scheduler']['kwargs'])
     # scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(optimizer, **config['scheduler']['kwargs'])
     scheduler = WarmupLR(optimizer, **config['scheduler']['kwargs'])
-    
-    loss_func = Loss(**config['loss']).to(args.device)
+
+    # 根据配置选择损失函数
+    loss_type = config.get('loss_type', 'hybrid')  # 默认使用原始hybrid
+    if loss_type == 'hybrid_smooth':
+        loss_func = HybridLossWithSmooth(**config['loss']).to(args.device)
+    else:
+        loss_func = Loss(**config['loss']).to(args.device)
     # loss_func = CCSDC_Loss(**config['ccsdc_loss']).to(args.device)
     # loss_func = STFTLoss(**config['stft_loss']).to(args.device)
 

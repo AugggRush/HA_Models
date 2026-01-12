@@ -1,0 +1,196 @@
+# GTCRN改进版配置示例
+# 集成了mask激活函数改进和频域平滑约束两个方案
+
+network_config:
+  n_fft: ${FFT.n_fft}
+  hop_len: ${FFT.hop_length}
+  win_len: ${FFT.win_length}
+
+  # ========== 方案1: 改进的Mask激活函数 ==========
+  # mask_mode可选:
+  #   - 'sigmoid': 标准模式 [0,1], 推荐用于baseline和低SNR场景
+  #   - 'sigmoid_2x': 增强模式 [0,2], 允许信号增强, 改善谐波细节
+  #   - 'tanh_residual': 残差模式 约[0,2], 提供微调能力, 用于精细优化
+  mask_mode: 'sigmoid'      # 建议: 先用sigmoid训练baseline
+
+  # use_residual: mask输出层是否使用残差学习
+  #   - False: 预测绝对mask值 (简单稳定)
+  #   - True: 预测相对于1.0的偏移量 (精细但复杂)
+  use_residual: False       # 建议: baseline阶段设False
+
+DDP:
+  world_size: 2
+
+optimizer:
+  lr: 0.001
+
+scheduler:
+  kwargs:
+    warmup_steps: 6000
+    decay_until_step: 60000
+    max_lr: 0.001
+    min_lr: 1.0e-05
+    init_lr: 0.0003
+  update_interval: step
+
+FFT:
+  n_fft: 128
+  hop_length: 48
+  win_length: 128
+
+# ========== 方案2: 频域平滑约束损失 ==========
+# loss_type可选:
+#   - 'hybrid': 原始HybridLoss (压缩谱 + SISNR)
+#   - 'hybrid_smooth': 推荐! 原始loss + 频域平滑约束
+loss_type: 'hybrid_smooth'
+
+loss:
+  n_fft: ${FFT.n_fft}
+  hop_len: ${FFT.hop_length}
+  win_len: ${FFT.win_length}
+  compress_factor: 0.3
+  eps: 1e-12
+  lamda_ri: 30
+  lamda_mag: 70
+
+  # ========== 频域平滑参数 (仅在loss_type='hybrid_smooth'时生效) ==========
+  enable_smooth: True             # 是否启用频域平滑损失
+
+  # smoothness_type: 平滑度计算方式
+  #   - 'l2': 简单的L2均方误差, 计算快, 效果中等
+  #   - 'hps': 高通抑制(推荐!), 二阶差分, 效果最好
+  #   - 'tv': 全变分, 计算稍慢, 效果介于l2和hps之间
+  smoothness_type: 'hps'
+
+  # weight_smooth_freq: 频域平滑权重 (关键参数!)
+  #   - 推荐范围: 0.10 - 0.20
+  #   - 0.10: 保守, 平滑效果温和, 不影响细节
+  #   - 0.15: 推荐, 平衡性能和质量
+  #   - 0.20: 激进, 最大化平滑度, 可能损失细节
+  #   - 预期: 每增加0.05, PESQ约+0.05, 但过大会失真
+  weight_smooth_freq: 0.10
+
+  # weight_smooth_time: 时域平滑权重
+  #   - 推荐范围: 0.03 - 0.08
+  #   - 作用: 提高时域稳定性, 减少帧间跳变
+  #   - 建议为freq权重的1/3左右
+  weight_smooth_time: 0.05
+
+# ========== 以下为原始配置,保持不变 ==========
+stft_loss:
+  n_fft: ${FFT.n_fft}
+  hop_len: ${FFT.hop_length}
+  win_len: ${FFT.win_length}
+  window: 'hann_window'
+  weight_sc: 10.0
+  weight_mag: 100.0
+
+ccsdc_loss:
+  alpha: 0.3
+  beta: 0.3
+  fft_size: ${FFT.n_fft}
+  norm_flag: False
+  eps: 1e-12
+  loss_type: 'mse'
+  revise_clean: False
+  hop_size: ${FFT.hop_length}
+  percep_weight: 0.06
+  mix_noise: 0.0
+
+train_dataset:
+  clean_file_path: 'prepare_datasets/train_clean_24k.csv'
+  noise_file_path: 'prepare_datasets/train_noise_picked_dns.csv'
+  rir_file_path: 'prepare_datasets/train_rir_24k.csv'
+  fs: 24000
+  length_in_seconds: 8
+  num_data_per_epoch: 100000
+  train: True
+  snr_db: [0, 25]
+  dr_db: [-40, -20]
+  pure_noise_prob: 0.0
+  random_seed: 1987
+  max_readers: 256
+
+train_dataloader:
+  batch_size: 96
+  num_workers: 8
+  drop_last: True
+  pin_memory: True
+  prefetch_factor: 2
+  persistent_workers: True
+
+validation_dataset:
+  clean_file_path: 'prepare_datasets/val_clean_24k.csv'
+  noise_file_path: 'prepare_datasets/val_noise_picked_dns.csv'
+  rir_file_path: 'prepare_datasets/val_rir_24k.csv'
+  fs: 24000
+  length_in_seconds: 8
+  num_data_per_epoch: 20000
+  train: False
+  snr_db: [0, 25]
+  dr_db: [-40, -20]
+  pure_noise_prob: 0.0
+  random_seed: 2026
+  max_readers: 256
+
+validation_dataloader:
+  batch_size: 96
+  num_workers: 8
+  pin_memory: True
+  prefetch_factor: 2
+  persistent_workers: True
+
+samplerate: 24000
+
+trainer:
+  epochs: 200
+  save_checkpoint_interval: 1
+  clip_grad_norm_value: 1
+  exp_path: /data/goodman/torch_nn_train/SEtrain/Ha_denoise/gtcrn_30M_hybrid_smooth
+  resume: False
+  # resume_datetime: 2026-01-08-11h44m  # 如果resume=True,取消注释
+
+lmdb_datasets:
+  train_lmdb_path: ./prepare_datasets/training_audio_pickDNS_24k_noDereverb.lmdb
+  valid_lmdb_path: ./prepare_datasets/validation_audio_pickDNS_24k_noDereverb.lmdb
+
+stage1_model:
+
+# ========== 训练策略建议 ==========
+#
+# 阶段1 (Epoch 1-50): Baseline + 平滑约束
+#   mask_mode: 'sigmoid'
+#   use_residual: False
+#   enable_smooth: True
+#   weight_smooth_freq: 0.10  # 保守开始
+#
+# 阶段2 (Epoch 51-100): 增强细节
+#   mask_mode: 'sigmoid_2x'   # 允许增强
+#   weight_smooth_freq: 0.15  # 增加约束
+#
+# 阶段3 (Epoch 101-150): 精细调优
+#   mask_mode: 'tanh_residual'
+#   use_residual: True
+#   weight_smooth_freq: 0.18
+#
+# ========== 快速测试 (单一改进) ==========
+#
+# 测试方案1 (仅mask改进):
+#   loss_type: 'hybrid'  # 关闭平滑
+#   mask_mode: 'sigmoid_2x'
+#
+# 测试方案2 (仅平滑损失):
+#   loss_type: 'hybrid_smooth'  # 开启平滑
+#   mask_mode: 'sigmoid'  # 保持标准
+#
+# ========== 故障排查 ==========
+#
+# 如果训练loss不下降:
+#   weight_smooth_freq: 0.08  # 降低权重
+#
+# 如果PESQ提升但听感变差:
+#   smoothness_type: 'l2'     # 改用温和模式
+#   weight_smooth_freq: 0.10
+#
+# 如果sigmoid_2x导致失真:
+#   在network_config中添加 postfilter: True

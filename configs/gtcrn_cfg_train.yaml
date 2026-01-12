@@ -2,6 +2,10 @@ network_config:
   n_fft: ${FFT.n_fft}
   hop_len: ${FFT.hop_length}
   win_len: ${FFT.win_length}
+  # 新增: mask激活函数配置
+  # mask_mode可选: 'sigmoid' (标准[0,1]) | 'sigmoid_2x' ([0,2]允许增强) | 'tanh_residual' (1-tanh残差修复)
+  mask_mode: 'sigmoid'  # 建议先用sigmoid训练baseline,再尝试sigmoid_2x或tanh_residual
+  use_residual: False   # mask输出层是否使用残差学习
 
 DDP:
   world_size: 2
@@ -23,6 +27,9 @@ FFT:
   hop_length: 48
   win_length: 128
 
+# 损失函数类型: 'hybrid' (原始) | 'hybrid_smooth' (推荐,添加频域平滑约束)
+loss_type: 'hybrid_smooth'
+
 loss:
   n_fft: ${FFT.n_fft}
   hop_len: ${FFT.hop_length}
@@ -31,6 +38,13 @@ loss:
   eps: 1e-12
   lamda_ri: 30
   lamda_mag: 70
+
+  # 新增: 频域平滑约束参数 (仅在loss_type='hybrid_smooth'时生效)
+  enable_smooth: True             # 是否启用频域平滑损失
+  smoothness_type: 'hps'          # 'l2' (简单) | 'hps' (推荐,高通抑制) | 'tv' (全变分)
+  weight_smooth_freq: 0.15        # 频域平滑权重 (建议0.10-0.20)
+  weight_smooth_time: 0.05        # 时域平滑权重 (建议0.03-0.08)
+
   # sample_rate: ${samplerate}
   # nfft: ${FFT.n_fft}
   # hop_size: ${FFT.hop_length}

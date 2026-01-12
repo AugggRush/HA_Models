@@ -259,14 +259,54 @@ class LearnableTanh2d(nn.Module):
         return self.beta * torch.tanh(self.slope * x)
     
 class LearnableSigmoid2d(nn.Module):
-    def __init__(self, in_features, beta=1):
+    def __init__(self, in_features, beta=1, mask_mode='sigmoid', use_residual=False):
+        """
+        可学习的Sigmoid激活函数,支持多种mask输出模式
+        Args:
+            in_features: 输入特征维度
+            beta: 缩放因子
+            mask_mode: 'sigmoid' (输出[0,1]) | 'sigmoid_2x' (输出[0,2]) | 'tanh_residual' (1-tanh输出[0,2])
+            use_residual: 是否使用残差连接,允许mask在1附近微调
+        """
         super().__init__()
         self.beta = beta
+        self.mask_mode = mask_mode
+        self.use_residual = use_residual
         self.slope = nn.Parameter(torch.ones(in_features, 1, 1))
         self.slope.requires_grad = True
 
+        # 残差学习: 预测偏移量而非绝对值
+        if use_residual:
+            self.residual_weight = nn.Parameter(torch.tensor(0.1))  # 可学习的残差权重
+
     def forward(self, x):
-        return self.beta * torch.sigmoid(self.slope * x)
+        if self.mask_mode == 'sigmoid':
+            # 标准sigmoid, 输出[0, 1]
+            mask = self.beta * torch.sigmoid(self.slope * x)
+
+        elif self.mask_mode == 'sigmoid_2x':
+            # sigmoid * 2, 输出[0, 2], 允许信号增强
+            mask = self.beta * 2.0 * torch.sigmoid(self.slope * x)
+
+        elif self.mask_mode == 'tanh_residual':
+            # 1 - tanh(x), 输出约[0, 2], 提供残差修复能力
+            # 当x很负时→tanh(x)→-1→mask→2 (增强)
+            # 当x=0时→tanh(x)→0→mask→1 (保持)
+            # 当x很正时→tanh(x)→1→mask→0 (抑制)
+            mask = self.beta * (1.0 - torch.tanh(self.slope * x))
+
+        else:
+            raise ValueError(f"Unsupported mask_mode: {self.mask_mode}")
+
+        # 残差连接: mask = 1 + residual_weight * delta
+        if self.use_residual:
+            # 预测相对于1.0的偏移量
+            delta = mask - 1.0
+            mask = 1.0 + self.residual_weight * delta
+            # 限制mask范围防止失真
+            mask = torch.clamp(mask, 0.0, 1.5)  # 最多增强50%
+
+        return mask
     
 class Decoder(nn.Module):
     def __init__(self):
@@ -406,13 +446,27 @@ class GTCRN(nn.Module):
         n_fft=256,
         hop_len=48,
         win_len=256,
-        postfilter=False
+        postfilter=False,
+        mask_mode='sigmoid',
+        use_residual=False
     ):
+        """
+        GTCRN音频降噪模型
+        Args:
+            n_fft: FFT点数
+            hop_len: 帧移
+            win_len: 窗长
+            postfilter: 是否使用后置滤波器
+            mask_mode: mask激活模式 'sigmoid' | 'sigmoid_2x' | 'tanh_residual'
+            use_residual: mask输出层是否使用残差学习
+        """
         super().__init__()
         self.n_fft = n_fft
         self.hop_len = hop_len
         self.win_len = win_len
         self.post_filter = postfilter
+        self.mask_mode = mask_mode
+        self.use_residual = use_residual
         self.sfe = SFE(3, 1)
         
         self.erb2 = ERB(24, 24, nfft=n_fft, high_lim=12000, fs=24000)
@@ -436,8 +490,13 @@ class GTCRN(nn.Module):
             # nn.PReLU(),
             nn.Dropout(0.1)
         )
-        # self.ltanh = LearnableTanh2d(41, beta=1)
-        self.lsigm = LearnableSigmoid2d(self.num_features2, beta=1)
+        # 使用改进的可学习激活函数,支持多种mask模式
+        self.lsigm = LearnableSigmoid2d(
+            self.num_features2,
+            beta=1,
+            mask_mode=mask_mode,
+            use_residual=use_residual
+        )
 
         self.stft = torch_asym_stft.STFT_asym(
             filter_length=n_fft, hop_length=hop_len, 
